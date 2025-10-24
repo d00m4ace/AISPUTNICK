@@ -115,25 +115,25 @@ https://d00m4ace.com/files/ai_sputnik_telegram_bot.pdf
 ## Установка зависимостей:
 
 *****
-Для PDF страниц сканирования:
+poppler for windows
 
-Windows: poppler скачать с https://github.com/oschwartz10612/poppler-windows
+https://github.com/oschwartz10612/poppler-windows
 
 ```add to PATH: C:\poppler-25.07.0\Library\bin```
 *****
-pandoc 
+pandoc for windows 
 
-pandoc for windows https://github.com/jgm/pandoc/releases/tag/3.7.0.2
+https://github.com/jgm/pandoc/releases/tag/3.7.0.2
 
 https://github.com/jgm/pandoc/releases/download/3.7.0.2/pandoc-3.7.0.2-windows-x86_64.msi
 *****
-Для работы с большими файлами потребуется установить ffmpeg:
+ffmpeg:
 
 https://www.ffmpeg.org/download.html
 
 ```add to PATH: C:\ffmpeg\bin```
 *****
-Также нужно установить Tesseract OCR:
+Tesseract OCR:
 
 Windows: https://github.com/UB-Mannheim/tesseract/wiki
 
