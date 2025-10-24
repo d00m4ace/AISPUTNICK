@@ -115,23 +115,9 @@ https://d00m4ace.com/files/ai_sputnik_telegram_bot.pdf
 ## Установка зависимостей:
 
 *****
-pip install pandas pillow pdf2image chardet aiofiles
-*****
-https://github.com/microsoft/markitdown
-pip install markitdown[all]
-*****
-HTML conversion
-pip install markdownify
-*****
-PowerPoint conversion  
-pip install pptx2md python-pptx
-*****
 Для PDF страниц сканирования:
 Windows: poppler скачать с https://github.com/oschwartz10612/poppler-windows
-add to PATH: C:\poppler-25.07.0\Library\bin
-*****
-pandas
-pip install pandas pillow pdf2image chardet aiofiles
+```add to PATH: C:\poppler-25.07.0\Library\bin```
 *****
 pandoc 
 need install pandoc for windows https://github.com/jgm/pandoc/releases/tag/3.7.0.2
@@ -139,16 +125,19 @@ https://github.com/jgm/pandoc/releases/download/3.7.0.2/pandoc-3.7.0.2-windows-x
 *****
 Для работы с большими файлами потребуется установить ffmpeg:
 https://www.ffmpeg.org/download.html
-add to PATH: C:\ffmpeg\bin
+```add to PATH: C:\ffmpeg\bin```
 *****
-# Также нужно установить Tesseract OCR:
-# Windows: https://github.com/UB-Mannheim/tesseract/wiki
-# Linux: sudo apt-get install tesseract-ocr tesseract-ocr-rus
-# Mac: brew install tesseract
-add to PATH: C:\Program Files\Tesseract-OCR
-***************
-C:\projects\python\SuperBotAI>path
-PATH=C:\Python313\Scripts\;C:\Python313\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\Git\cmd;C:\w64devkit\bin;C:\ffmpeg\bin;C:\curl;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\poppler-25.07.0\Library\bin\;C:\Program Files\PowerShell\7\;C:\Program Files\Tesseract-OCR;C:\Users\d00m4ace\AppData\Local\Microsoft\WindowsApps;C:\Users\d00m4ace\AppData\Local\Pandoc\
+Также нужно установить Tesseract OCR:
+
+Windows: https://github.com/UB-Mannheim/tesseract/wiki
+
+Linux: sudo apt-get install tesseract-ocr tesseract-ocr-rus
+
+Mac: brew install tesseract
+
+```add to PATH: C:\Program Files\Tesseract-OCR```
+*****
+
 ***************
 получить yandex.ru токен
 
