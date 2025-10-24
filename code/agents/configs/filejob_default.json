@@ -1,0 +1,186 @@
+{
+    "name": "filejob",
+    "type": "fileworker",
+    "description": "Пакетная обработка файлов с применением ИИ запросов к каждому файлу",
+    "version": "1.0.0",
+    "owner_id": "system",
+    "access": "public",
+
+    "processing_mode": "independent",
+    "// processing_mode": "independent - каждый файл отдельно, sequential - с учетом предыдущих, merged - все файлы одним запросом",
+
+    "chunking": {
+        "enabled": false,
+        "// enabled": "Включить обработку файлов по частям (чанкам)",
+        
+        "chunk_size": 4000,
+        "// chunk_size": "Размер одного чанка в символах",
+        
+        "overlap_size": 200,
+        "// overlap_size": "Размер перекрытия между чанками для сохранения контекста",
+        
+        "chunk_mode": "sliding_window",
+        "// chunk_mode": "sliding_window - с перекрытием, fixed - фиксированные куски, smart - умное разделение по абзацам/функциям",
+        
+        "smart_boundaries": {
+            "enabled": true,
+            "// enabled": "Пытаться разделять по логическим границам (функции, классы, абзацы)",
+            
+            "patterns": [
+                "\\n\\nclass ",
+                "\\n\\ndef ",
+                "\\n\\nasync def ",
+                "\\n\\nfunction ",
+                "\\n\\nexport ",
+                "\\n\\n## ",
+                "\\n\\n### ",
+                "\\n\\n---",
+                "\\n\\n\\n"
+            ],
+            "// patterns": "Паттерны для определения логических границ разделения"
+        },
+        
+        "chunk_header_template": "\n[Часть {chunk_num}/{total_chunks} файла {filename}]\n",
+        "// chunk_header_template": "Шаблон заголовка для каждого чанка",
+        
+        "combine_chunk_results": true,
+        "// combine_chunk_results": "Объединять ли результаты обработки чанков одного файла",
+        
+        "chunk_result_separator": "\n\n--- Продолжение ---\n\n",
+        "// chunk_result_separator": "Разделитель между результатами чанков одного файла",
+        
+        "max_chunks_per_file": 50,
+        "// max_chunks_per_file": "Максимальное количество чанков для одного файла",
+        
+        "process_chunks_sequentially": false,
+        "// process_chunks_sequentially": "Обрабатывать чанки последовательно с передачей контекста предыдущих",
+        
+        "chunk_context_template": "Это часть {chunk_num} из {total_chunks} файла {filename}. Предыдущий контекст: {previous_context}",
+        "// chunk_context_template": "Шаблон контекста для последовательной обработки чанков"
+    },
+
+    "concatenate_settings": {
+        "enabled": false,
+        "// enabled": "Включить режим простой склейки файлов без ИИ обработки",
+        
+        "file_header_template": "\n\n{'='*60}\n# Файл: {filename}\n# Размер: {size} байт\n# Путь: {path}\n{'='*60}\n\n",
+        "// file_header_template": "Шаблон заголовка для каждого файла. Доступные переменные: {filename}, {path}, {size}, {index}, {total}",
+        
+        "file_separator": "\n\n",
+        "// file_separator": "Разделитель между файлами",
+        
+        "include_toc": true,
+        "// include_toc": "Добавить оглавление в начало документа",
+        
+        "toc_template": "# Объединенный документ\n\n## Содержание:\n{toc_items}\n\n---\n\n",
+        "// toc_template": "Шаблон оглавления. {toc_items} будет заменен на список файлов",
+        
+        "toc_item_template": "{index}. [{filename}](#{anchor}) - {size} байт\n",
+        "// toc_item_template": "Шаблон элемента оглавления",
+        
+        "add_file_anchors": true,
+        "// add_file_anchors": "Добавлять якоря для навигации",
+        
+        "include_stats": true,
+        "// include_stats": "Добавить статистику в конец документа",
+        
+        "stats_template": "\n\n---\n\n## Статистика:\n- Всего файлов: {total_files}\n- Общий размер: {total_size}\n- Дата создания: {timestamp}\n",
+        "// stats_template": "Шаблон блока статистики",
+        
+        "sort_files": "name",
+        "// sort_files": "Сортировка файлов: 'name', 'size', 'extension', 'none'",
+        
+        "group_by_extension": false,
+        "// group_by_extension": "Группировать файлы по расширению",
+        
+        "skip_empty_files": true,
+        "// skip_empty_files": "Пропускать пустые файлы",
+        
+        "max_file_size": 1048576,
+        "// max_file_size": "Максимальный размер файла для включения (в байтах)",
+        
+        "truncate_large_files": true,
+        "// truncate_large_files": "Обрезать большие файлы вместо пропуска",
+        
+        "truncate_at": 100000,
+        "// truncate_at": "Размер, после которого файл будет обрезан (в символах)",
+        
+        "truncate_message": "\n\n[... файл обрезан, показано {shown} из {total} символов ...]\n",
+        "// truncate_message": "Сообщение при обрезке файла"
+    },
+
+    "merge_settings": {
+        "max_total_size": 200000,
+        "// max_total_size": "Максимальный размер объединенного контента в символах (200К по умолчанию)",
+
+        "file_separator": "\n\n════════════════════════════════════════\n▶ {filename}\n════════════════════════════════════════\n\n",
+        "// file_separator": "Разделитель между файлами при объединении. Доступна переменная {filename}",
+
+        "truncate_message": "\n\n[... содержимое обрезано из-за превышения лимита в {max_size} символов ...]",
+        "// truncate_message": "Сообщение при обрезке файла",
+
+        "include_file_list": true,
+        "// include_file_list": "Включать ли список обработанных файлов в начало результата",
+
+        "smart_truncate": true,
+        "// smart_truncate": "Умная обрезка - пытается сохранить целостность кода/текста"
+    },
+
+    "result_separator": "\n\n════════════════════════════════════════\n\n",
+    "// result_separator": "Разделитель между результатами обработки файлов в итоговом документе",
+
+    "file_header_template": "╔══════════════════════════════════════╗\n║ Файл: {filename}\n║ Обработан: {timestamp}\n╚══════════════════════════════════════╝\n\n",
+    "// file_header_template": "Шаблон заголовка для каждого файла в результате. Доступные переменные: {filename}, {timestamp}",
+
+    "include_source_in_result": false,
+    "// include_source_in_result": "Включать ли исходное содержимое файла в результат",
+
+    "max_files_per_job": 100,
+    "// max_files_per_job": "Максимальное количество файлов для обработки за одну задачу",
+
+    "show_progress": true,
+    "// show_progress": "Показывать ли прогресс обработки в реальном времени",
+
+    "progress_update_interval": 3,
+    "// progress_update_interval": "Интервал обновления прогресса в секундах",
+
+    "ai_settings": {
+        "provider": "default",
+        "model": "default",
+        "_max_tokens": 4000,
+        "_max_completion_tokens": 4096,
+        "_temperature": 1.0,
+        "// comment": "Настройки ИИ для обработки файлов"
+    },
+
+    "file_filters": {
+        "skip_binary": true,
+        "max_file_size": 1048576,
+        "// comment": "Фильтры для автоматического пропуска файлов"
+    },
+
+    "encoding": {
+        "try_encodings": ["utf-8", "cp1251", "latin-1", "cp866"],
+        "// try_encodings": "Список кодировок для попытки декодирования файлов по порядку",
+        
+        "fallback_encoding": "latin-1",
+        "// fallback_encoding": "Резервная кодировка, если все остальные не сработали",
+        
+        "fallback_errors": "ignore",
+        "// fallback_errors": "Как обрабатывать ошибки при резервном декодировании: 'ignore', 'replace', 'strict'"
+    },
+
+    "output_format": {
+        "type": "markdown",
+        "include_toc": true,
+        "include_summary": true,
+        "// comment": "Формат итогового документа"
+    },
+
+    "error_handling": {
+        "continue_on_error": true,
+        "include_errors_in_result": true,
+        "error_prefix": "⚠️ ОШИБКА: ",
+        "// comment": "Как обрабатывать ошибки при обработке файлов"
+    }
+}

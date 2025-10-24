@@ -1,0 +1,96 @@
+{
+  "pages": [
+    {
+      "id": "sheet_29e8f1_2f233b",
+      "url": "https://docs.google.com/spreadsheets/d/1E4YYZAAvcEPiWNJPvyDBtTXxHSjjRoY0yl1W4NbyFYA/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "sheet_3f92ea_07765c",
+      "url": "https://docs.google.com/spreadsheets/d/1yTRJLXczkZxydoSQtgDgS9COXU1oIi157XGeVu1wvqA/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "sheet_6369f7_07d17e",
+      "url": "https://docs.google.com/spreadsheets/d/1PVjuIxXZDjGa72heiJX7tRdwzAr0M-_cY6s_ujy8ZIk/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "sheet_da9516_146137",
+      "url": "https://docs.google.com/spreadsheets/d/1rjMfQnry_W_WrStJfYelYHfCChfhjwU4sF3K-2Xsug0/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "sheet_a493cd_88ccac",
+      "url": "https://docs.google.com/spreadsheets/d/1TGPei7_Xzmmis5Ehk0VElOpgPMBX5oORzv9JJ9vSmFE/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "sheet_8bc7d2_b0a4e9",
+      "url": "https://docs.google.com/spreadsheets/d/174dGQfHc-ck85Yg-nLvJ5Omi-ZZ9FpzR7uBU6AdxxeI/edit?usp=sharing",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "conf_099165_117972",
+      "url": "https://smartchip79.atlassian.net/wiki/spaces/test/pages/622593/AzerothCore",
+      "provider": "confluence",
+      "auth_config": "confluence_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "wiki_78f0dc_75d1ba",
+      "url": "https://wiki.yandex.ru/users/andrew.petrov/net-runner-test/",
+      "provider": "yandex_wiki",
+      "auth_config": "yandex_main",
+      "enabled": true,
+      "check_updates": true
+    },
+    {
+      "id": "drive_1c3f96_a23ea1",
+      "url": "https://drive.google.com/drive/folders/1-k0uzy2EqKG8ajOV_ZY47PvxALnPgLhQ?usp=sharing",
+      "provider": "google_gdrive_list",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true,
+      "description": "Креативы по всем играм.",
+      "skip_file_patterns": [
+        "*.tmp",
+        "~*",
+        ".*",
+        "Thumbs.db"
+      ],
+      "skip_folder_patterns": [
+        "Backup",
+        "node_modules",
+        "__pycache__",
+        ".git",
+        "temp*"
+      ],
+      "include_folders": true,
+      "include_file_types": false,
+      "include_modified_date": false,
+      "include_size": false,
+      "sort_by": "name",
+      "group_by_type": false
+    }
+  ]
+}

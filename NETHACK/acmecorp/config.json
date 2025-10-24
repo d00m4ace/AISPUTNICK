@@ -1,0 +1,82 @@
+{
+  "sync_interval_seconds": 300,
+  "storage_path": "NETHACK/acmecorp",
+  "storage": {
+    "pages_dir": "md_files",
+	"hotfix_dir": "hotfix",
+    "pages_list_file": "net_pages_links.json",
+    "local_data_file": "local_pages.json"
+  },  
+  "export_formats": {
+    "google_sheets": {
+      "default_format": "markdown",
+      "save_json_copy": false,
+      "json_dir": "json_files",
+      "request_delay_seconds": 2,
+      "max_retries": 3,
+      "retry_delay_seconds": 65
+    }
+  },
+  "auth_configs": {
+    "yandex_main": {
+      "type": "yandex_oauth",
+      "oauth_token": "y0...Zg",
+      "org_id": "2...5"
+    },
+    "yandex_disk_main": {
+      "type": "yandex_oauth",
+      "oauth_token": "y0...Dg"
+    },
+    "google_main": {
+      "type": "google_service_account",
+      "service_account_file": "NETHACK/superbotai-40dec23cb052.json"
+    },
+	"buildin_main": {
+      "type": "buildin_bot_token",
+      "bot_token": "E...Z",
+      "fetch_child_pages": true,
+      "max_depth": 3,
+      "include_gdrive_content": false,
+      "gdrive_auth_config": {
+        "type": "google_service_account",
+        "service_account_file": "NETHACK/superbotai-40dec23cb052.json"
+      }
+    },
+	"confluence_main": {
+      "type": "confluence_api",
+      "site_url": "https://s...9.atlassian.net",
+      "email": "s...9@gmail.com",
+      "api_token": "A....p"
+    }	
+  },
+  "providers": {
+	"google_gdrive": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },
+    "google_docs": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },
+    "yandex_wiki": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },	
+    "buildin": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },
+    "confluence": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },
+   "yandex_disk": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    },
+    "yandex_disk_list": {
+      "request_delay_seconds": 3,
+      "max_retries": 3
+    }	
+  }
+}

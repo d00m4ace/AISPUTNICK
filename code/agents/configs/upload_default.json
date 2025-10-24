@@ -1,0 +1,123 @@
+{
+    "name": "upload",
+    "type": "downloader",
+    "description": "Скачивание файлов по ссылкам с автоматической обработкой и конвертацией",
+    "version": "1.0.0",
+    "owner_id": "system",
+    "access": "public",
+	
+	"google_service_account_file": "NETHACK/superbotai-40dec23cb052.json",
+    
+    "max_file_size": 104857600,
+    "// max_file_size": "Максимальный размер скачиваемого файла в байтах (100MB)",
+    
+    "timeout": 60,
+    "// timeout": "Таймаут скачивания в секундах",
+    
+    "chunk_size": 8192,
+    "// chunk_size": "Размер чанка при скачивании в байтах",
+    
+    "allowed_protocols": ["http", "https"],
+    "// allowed_protocols": "Разрешенные протоколы для скачивания",
+    
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "// user_agent": "User-Agent для запросов",
+    
+    "auto_detect_type": true,
+    "// auto_detect_type": "Автоматически определять тип файла",
+    
+    "process_archives": false,
+    "// process_archives": "Обрабатывать архивы (если false - предлагать использовать @zip)",
+    
+    "supported_audio_formats": [
+        ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".wma", ".opus"
+    ],
+    "// supported_audio_formats": "Поддерживаемые аудио форматы для транскрипции",
+    
+    "supported_document_formats": [
+        ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".rtf", ".odt", ".html", ".htm"
+    ],
+    "// supported_document_formats": "Поддерживаемые форматы документов для конвертации",
+    
+    "supported_image_formats": [
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"
+    ],
+    "// supported_image_formats": "Поддерживаемые форматы изображений для OCR",
+    
+    "text_file_extensions": [
+        ".txt", ".md", ".py", ".js", ".ts", ".java", ".cpp", ".c", ".cs", ".go", ".rs",
+        ".php", ".rb", ".swift", ".kt", ".scala", ".r", ".sql", ".sh", ".bash", ".ps1",
+        ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".config",
+        ".html", ".htm", ".css", ".scss", ".sass", ".less",
+        ".vue", ".jsx", ".tsx", ".svelte"
+    ],
+    "// text_file_extensions": "Расширения текстовых файлов для прямого сохранения",
+    
+    "encoding": {
+        "primary": "utf-8",
+        "// primary": "Основная кодировка для текстовых файлов",
+        
+        "fallback_encodings": [
+            "cp1251", "cp866", "koi8-r", "iso-8859-5", "latin-1", "ascii"
+        ],
+        "// fallback_encodings": "Резервные кодировки для попытки декодирования"
+    },
+    
+    "retry": {
+        "max_attempts": 3,
+        "// max_attempts": "Максимальное количество попыток скачивания",
+        
+        "delay": 2,
+        "// delay": "Задержка между попытками в секундах"
+    },
+    
+    "headers": {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "DNT": "1"
+    },
+    "// headers": "Дополнительные HTTP заголовки для запросов",
+    
+    "follow_redirects": true,
+    "// follow_redirects": "Следовать редиректам при скачивании",
+    
+    "max_redirects": 10,
+    "// max_redirects": "Максимальное количество редиректов",
+    
+    "ssl_verify": true,
+    "// ssl_verify": "Проверять SSL сертификаты",
+    
+    "proxy": {
+        "enabled": false,
+        "url": null,
+        "// proxy": "Настройки прокси-сервера если необходимо"
+    },
+    
+    "filename_handling": {
+        "sanitize": true,
+        "// sanitize": "Очищать имена файлов от опасных символов",
+        
+        "max_length": 255,
+        "// max_length": "Максимальная длина имени файла",
+        
+        "replace_spaces": true,
+        "// replace_spaces": "Заменять пробелы на подчеркивания",
+        
+        "lowercase": true,
+        "// lowercase": "Приводить имена к нижнему регистру"
+    },
+    
+    "notifications": {
+        "show_progress": true,
+        "// show_progress": "Показывать прогресс загрузки",
+        
+        "update_interval": 5,
+        "// update_interval": "Интервал обновления прогресса в секундах",
+        
+        "detailed_report": true,
+        "// detailed_report": "Выводить детальный отчет после обработки"
+    }
+}

@@ -1,0 +1,94 @@
+{
+  "pages": {
+    "sheet_29e8f1_2f233b": {
+      "title": "сотрудники компании",
+      "url": "https://docs.google.com/spreadsheets/d/1E4YYZAAvcEPiWNJPvyDBtTXxHSjjRoY0yl1W4NbyFYA/edit?usp=sharing",
+      "file_name": "sheet_29e8f1_2f233b.md",
+      "file_path": "md_files\\sheet_29e8f1_2f233b.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T16:25:52.209Z",
+      "last_sync": "2025-10-02T09:18:35.001306",
+      "provider": "google_docs"
+    },
+    "sheet_3f92ea_07765c": {
+      "title": "товары компании",
+      "url": "https://docs.google.com/spreadsheets/d/1yTRJLXczkZxydoSQtgDgS9COXU1oIi157XGeVu1wvqA/edit?usp=sharing",
+      "file_name": "sheet_3f92ea_07765c.md",
+      "file_path": "md_files\\sheet_3f92ea_07765c.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T16:29:20.965Z",
+      "last_sync": "2025-10-08T08:28:01.243583",
+      "provider": "google_docs"
+    },
+    "sheet_6369f7_07d17e": {
+      "title": "продажи",
+      "url": "https://docs.google.com/spreadsheets/d/1PVjuIxXZDjGa72heiJX7tRdwzAr0M-_cY6s_ujy8ZIk/edit?usp=sharing",
+      "file_name": "sheet_6369f7_07d17e.md",
+      "file_path": "md_files\\sheet_6369f7_07d17e.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T16:40:09.019Z",
+      "last_sync": "2025-09-26T18:57:31.359818",
+      "provider": "google_docs"
+    },
+    "sheet_da9516_146137": {
+      "title": "Зарплаты и выплаты",
+      "url": "https://docs.google.com/spreadsheets/d/1rjMfQnry_W_WrStJfYelYHfCChfhjwU4sF3K-2Xsug0/edit?usp=sharing",
+      "file_name": "sheet_da9516_146137.md",
+      "file_path": "md_files\\sheet_da9516_146137.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T16:42:46.246Z",
+      "last_sync": "2025-10-06T10:04:00.156005",
+      "provider": "google_docs"
+    },
+    "sheet_a493cd_88ccac": {
+      "title": "HR сотрудники",
+      "url": "https://docs.google.com/spreadsheets/d/1TGPei7_Xzmmis5Ehk0VElOpgPMBX5oORzv9JJ9vSmFE/edit?usp=sharing",
+      "file_name": "sheet_a493cd_88ccac.md",
+      "file_path": "md_files\\sheet_a493cd_88ccac.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T16:43:13.193Z",
+      "last_sync": "2025-10-01T02:14:35.894229",
+      "provider": "google_docs"
+    },
+    "sheet_8bc7d2_b0a4e9": {
+      "title": "контакты для подключения и выдачи доступов",
+      "url": "https://docs.google.com/spreadsheets/d/174dGQfHc-ck85Yg-nLvJ5Omi-ZZ9FpzR7uBU6AdxxeI/edit?usp=sharing",
+      "file_name": "sheet_8bc7d2_b0a4e9.md",
+      "file_path": "md_files\\sheet_8bc7d2_b0a4e9.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T18:37:15.436Z",
+      "last_sync": "2025-09-30T20:11:34.329529",
+      "provider": "google_docs"
+    },
+    "conf_099165_117972": {
+      "title": "AzerothCore",
+      "url": "https://smartchip79.atlassian.net/wiki/spaces/test/pages/622593/AzerothCore",
+      "file_name": "conf_099165_117972.md",
+      "file_path": "md_files\\conf_099165_117972.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-26T17:12:40.561Z",
+      "last_sync": "2025-10-05T18:26:01.047110",
+      "provider": "confluence"
+    },
+    "wiki_78f0dc_75d1ba": {
+      "title": "net runner test",
+      "url": "https://wiki.yandex.ru/users/andrew.petrov/net-runner-test/",
+      "file_name": "wiki_78f0dc_75d1ba.md",
+      "file_path": "md_files\\wiki_78f0dc_75d1ba.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-11T11:05:40.604Z",
+      "last_sync": "2025-09-26T18:58:03.634807",
+      "provider": "yandex_wiki"
+    },
+    "drive_1c3f96_a23ea1": {
+      "title": "models - File List",
+      "url": "https://drive.google.com/drive/folders/1-k0uzy2EqKG8ajOV_ZY47PvxALnPgLhQ?usp=sharing",
+      "file_name": "drive_1c3f96_a23ea1.md",
+      "file_path": "md_files\\drive_1c3f96_a23ea1.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-30T23:06:31.463817",
+      "last_sync": "2025-09-30T23:06:31.465794",
+      "provider": "google_gdrive_list"
+    }
+  }
+}

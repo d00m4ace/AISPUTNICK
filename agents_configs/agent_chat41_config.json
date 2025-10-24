@@ -1,0 +1,41 @@
+{
+  "name": "chat41",
+  "type": "chat",
+  "description": "Интеллектуальный чат-агент с поддержкой истории сообщений и контекста файлов (gpt-4.1)",
+  "owner_id": "system",
+  "access": "public",
+  "system_prompt": "Вы - полезный ИИ помощник. Отвечайте на вопросы пользователя кратко и по существу на русском языке. Учитывайте контекст предыдущих сообщений в разговоре. Если у пользователя есть загруженный файл, используйте его содержимое для ответов.",
+  "file_prompt": "\n\nУ пользователя есть файл <filename> с содержимым:\n---\n<content>\n---\n\nВы можете ссылаться на этот файл в ответах и отвечать на вопросы по его содержанию.",
+  "multi_file_prompt": "\n\nУ пользователя есть <file_count> файлов (объединенный размер: <total_size>):\n<file_list>\n\nОбъединенное содержимое:\n---\n<content>\n---\n\nВы можете ссылаться на эти файлы в ответах и отвечать на вопросы по их содержимому.",
+  "history": {
+    "enabled": true,
+    "max_messages": 20,
+    "include_system": false,
+    "clear_on_context_change": false,
+    "persist": false,
+    "show_history_info": false,
+    "clear_files_on_history_clear": true
+  },  
+  "ai_settings": {
+    "provider": "openai",
+    "model": "gpt-4.1",
+    "_max_tokens": 4096,
+    "_max_completion_tokens": 4096,
+    "_temperature": 1.0
+  },
+  "file_context": {
+    "enabled": true,
+    "max_content_length": 200000,
+    "include_filename": true,
+    "auto_include": true,
+    "multi_file_mode": "merge",
+    "multi_file_mode_": "last",
+    "merge_separator": "\n\n========================================\nФайл: {filename}\n========================================\n\n",
+    "show_truncation_warning": true
+  },
+  "response_settings": {
+    "max_telegram_length": 4000,
+    "create_file_if_long": true,
+    "file_format": "md"
+  }
+}

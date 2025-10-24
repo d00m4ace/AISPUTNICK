@@ -1,0 +1,12 @@
+{
+  "api_key": "s...A",
+  
+  "source_dir": "./NETHACK/acmecorp/md_files",
+  "summary_dir": "./NETHACK/acmecorp/sum",
+  
+  "summary_model": "gpt-5",
+  "summary_max_chars": 2048,
+  "reasoning_effort": "minimal",
+    
+  "_comment": "Поддерживаемые модели: gpt-5, gpt-5-mini, gpt-5-nano, o3, o3-mini, o4, o4-mini"
+}

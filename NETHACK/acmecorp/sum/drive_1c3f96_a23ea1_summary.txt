@@ -1,0 +1,3 @@
+*ПРИОРИТЕТ 1* для запросов по расположению и названиям папок и файлов с моделями/ресурсами для генерации изображений (Stable Diffusion, VAE, Lora, ControlNet, ESRGAN, GFPGAN, deepbooru и т.п.).
+
+Кратко: список корневых папок с прямыми ссылками на модели и утилиты: Codeformer, ControlNet, deepbooru, ESRGAN, GFPGAN, hypernetworks, karlo (ViT-L-14_stats.th), LDSR, Lora, Stable-diffusion (инструкция куда класть чекпоинты), SwinIR, VAE (инструкция) и VAE-approx (model.pt).

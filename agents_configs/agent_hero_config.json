@@ -1,0 +1,18 @@
+{
+  "name": "hero",
+  "description": "HeroCraft Интеллектуальный поиск ответов (nethack агент)",
+  "type": "nethack",
+  "access": "public",
+  "qa_config_path": "./NETHACK/herocraft/config_aifaq.json",
+  "access_config_path": "./NETHACK/herocraft/doc_access.json",
+  "response_settings": {
+    "verbose": false,
+    "show_sources": true,
+    "max_answer_length": 20000,
+    "fallback_message": "К сожалению, не могу найти информацию по вашему запросу в доступных документах."
+  },
+  "cache_settings": {
+    "enabled": true,
+    "ttl_seconds": 600
+  }
+}

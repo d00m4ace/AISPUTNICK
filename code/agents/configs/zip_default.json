@@ -1,0 +1,122 @@
+{
+    "name": "zip",
+    "type": "archive",
+    "description": "Распаковка архивов, конвертация документов и сохранение в кодовую базу",
+    "version": "1.0.0",
+    "owner_id": "system",
+    "access": "public",
+
+    "supported_formats": [ ".zip", ".7z" ],
+    "// supported_formats": "Поддерживаемые форматы архивов",
+
+    "max_archive_size": 52428800,
+    "// max_archive_size": "Максимальный размер архива в байтах (50MB)",
+
+    "max_total_extracted_size": 104857600,
+    "// max_total_extracted_size": "Максимальный суммарный размер распакованных файлов (100MB)",
+
+    "max_file_size": 5242880,
+    "// max_file_size": "Максимальный размер одного файла (5MB)",
+
+    "max_files_count": 500,
+    "// max_files_count": "Максимальное количество файлов для извлечения",
+
+    "encoding": {
+        "primary": "utf-8",
+        "// primary": "Основная кодировка для попытки декодирования",
+
+        "fallback_encodings": [
+            "cp1251",
+            "cp866",
+            "koi8-r",
+            "iso-8859-5",
+            "latin-1",
+            "ascii"
+        ],
+        "// fallback_encodings": "Резервные кодировки для попытки декодирования",
+
+        "force_decode": true,
+        "// force_decode": "Принудительное декодирование с заменой некорректных символов",
+
+        "decode_errors": "replace",
+        "// decode_errors": "Как обрабатывать ошибки декодирования: ignore, replace, strict"
+    },
+    
+    "file_filters": {
+        "skip_hidden": true,
+        "// skip_hidden": "Пропускать скрытые файлы (начинающиеся с точки)",
+
+        "skip_system": true,
+        "// skip_system": "Пропускать системные файлы",
+
+        "skip_empty": true,
+        "// skip_empty": "Пропускать пустые файлы",
+
+        "system_patterns": [
+            "__MACOSX",
+            ".DS_Store",
+            "Thumbs.db",
+            "desktop.ini",
+            ".git",
+            ".svn",
+            "node_modules"
+        ],
+        "// system_patterns": "Паттерны системных файлов/папок для пропуска"
+    },
+
+    "extraction": {
+        "temp_dir": "temp_extract",
+        "// temp_dir": "Временная директория для распаковки",
+
+        "cleanup_on_error": true,
+        "// cleanup_on_error": "Очищать временные файлы при ошибке",
+
+        "cleanup_on_success": true,
+        "// cleanup_on_success": "Очищать временные файлы после успешной обработки",
+
+        "validate_before_save": true,
+        "// validate_before_save": "Проверять файлы перед сохранением",
+
+        "overwrite_existing": false,
+        "// overwrite_existing": "Перезаписывать существующие файлы",
+
+        "add_index_on_conflict": true,
+        "// add_index_on_conflict": "Добавлять индекс при конфликте имен"
+    },
+
+    "progress": {
+        "show_progress": true,
+        "// show_progress": "Показывать прогресс распаковки",
+
+        "update_interval": 10,
+        "// update_interval": "Обновлять прогресс каждые N файлов",
+
+        "detailed_report": true,
+        "// detailed_report": "Выводить детальный отчет после обработки"
+    },
+
+    "security": {
+        "scan_for_suspicious": true,
+        "// scan_for_suspicious": "Проверять на подозрительные файлы",
+
+        "suspicious_extensions": [
+            ".exe",
+            ".dll",
+            ".bat",
+            ".cmd",
+            ".com",
+            ".scr",
+            ".vbs",
+            ".js",
+            ".jar",
+            ".app"
+        ],
+        "// suspicious_extensions": "Расширения подозрительных файлов",
+
+        "block_path_traversal": true,
+        "// block_path_traversal": "Блокировать попытки выхода за пределы директории",
+
+        "max_nested_depth": 10,
+        "// max_nested_depth": "Максимальная глубина вложенности архивов"
+    }
+}

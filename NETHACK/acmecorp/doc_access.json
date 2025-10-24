@@ -1,0 +1,41 @@
+{
+  "groups": {
+    "admins": {
+      "name": "Администраторы",
+      "description": "Полный доступ ко всем документам",
+      "users": [80239239]
+    },
+    "hr": {
+      "name": "HR",
+      "description": "Доступ к HR докам",
+      "users": [339717185]
+    },
+    "developers": {
+      "name": "Разработчики",
+      "description": "Доступ к технической документации",
+      "users": [1119720393]
+    },
+    "managers": {
+      "name": "Менеджеры",
+      "description": "Доступ к управленческим документам",
+      "users": [1119720393]
+    },
+    "viewers": {
+      "name": "Читатели",
+      "description": "Базовый доступ к публичным документам",
+      "users": [1119720393,80239239,339717185,104096334]
+    }
+  },
+  "documents": {
+    "sheet_29e8f1_2f233b": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"sheet_3f92ea_07765c": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"sheet_6369f7_07d17e": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"sheet_da9516_146137": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"sheet_a493cd_88ccac": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"sheet_8bc7d2_b0a4e9": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"conf_099165_117972": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"wiki_78f0dc_75d1ba": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] },
+	"drive_1c3f96_a23ea1": { "name": "UA статусу проектов", "access_groups": ["admins","viewers"] }	
+  },
+  "public_documents": []
+}

@@ -1,0 +1,35 @@
+{
+  "name": "rag",
+  "type": "rag",
+  "description": "Интеллектуальный поиск по кодовой базе с контекстными ответами",
+  "version": "1.0.0",
+  "owner_id": "system",
+  "access": "public",
+  
+  "ai_settings": {
+    "provider": "default",
+    "model": "default",
+	"_max_tokens": 4096,
+    "_max_completion_tokens": 4096,
+    "_temperature": 1.0,
+    "comment": "GPT-5 поддерживает только temperature=1.0"
+  },
+  
+  "rag_settings": {
+    "max_context_chunks": 5,
+    "search_threshold": 0.03,
+    "chunk_size": 4096,
+    "overlap_size": 256,
+    "include_filenames": true
+  },
+  
+  "system_prompt": "Ты помощник программиста. Используй предоставленный контекст из кодовой базы для ответов на вопросы. Если в контексте есть точная информация по вопросу, используй её. Если информации недостаточно, скажи об этом. Отвечай конкретно и по существу.",
+  
+  "codebase": "default",
+  
+  "response_settings": {
+    "max_telegram_length": 4000,
+    "create_file_if_long": true,
+    "file_format": "md"
+  }
+}

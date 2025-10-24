@@ -1,0 +1,21 @@
+{
+  "name": "nethack",
+  "description": "Интеллектуальный поиск ответов по файлам из сети",
+  "type": "nethack",
+  "access": "public",
+   
+  "qa_config_path": "./NETHACK/acmecorp/config_aifaq.json",
+  "access_config_path": "./NETHACK/acmecorp/doc_access.json",  
+  
+  "response_settings": {
+    "verbose": true,
+    "show_sources": true,
+    "max_answer_length": 20000,
+    "fallback_message": "К сожалению, не могу найти информацию по вашему запросу в доступных документах."
+  },
+  
+  "cache_settings": {
+    "enabled": true,
+    "ttl_seconds": 600
+  }
+}

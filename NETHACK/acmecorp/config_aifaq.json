@@ -1,0 +1,56 @@
+{
+  "api_key":  "s...A",
+
+  "base_dir": "./NETHACK/acmecorp/",  
+  "source_dir": "./NETHACK/acmecorp/md_files",
+  "summary_dir": "./NETHACK/acmecorp/sum",
+  
+  "rem_reasoning_effort": "minimal, low, medium, high",
+  "rem_verbosity": "low, medium, high",
+  
+  "selection_model": "gpt-5",
+  "select_reasoning_effort": "low",
+  "select_verbosity": "low",
+
+  "answer_model": "gpt-5",
+  "answer_reasoning_effort": "minimal",
+  "answer_verbosity": "medium",
+  
+  "max_concurrent_api_calls": 5,
+  "cache_ttl_seconds": 300,  
+  
+	"model_contexts": {
+    "gpt-5": 256000,
+    "gpt-5-mini": 128000,
+    "gpt-5-nano": 64000,
+    
+    "gpt-4.1": 128000,
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+    "gpt-4-turbo": 128000,
+    "gpt-4": 8192,
+    
+    "o3": 200000,
+    "o3-mini": 100000,
+    "o4": 256000,
+    "o4-mini": 128000,
+    
+    "gpt-3.5-turbo": 16384,
+    "gpt-3.5-turbo-16k": 16384
+  },
+  
+	"model_temperature_fixed": {
+	"gpt-5": 1.0,
+    "gpt-5-mini": 1.0,
+    "gpt-5-nano": 1.0,		
+
+	"o3": 1.0,
+    "o3-mini": 1.0,
+    "o4": 1.0,
+    "o4-mini": 1.0,	
+	
+    "o1-preview": 1.0,
+    "o1-mini": 1.0,
+    "o1": 1.0
+  }  
+}
