@@ -182,80 +182,184 @@ y0__...ZDg
 ***************
 JSON-ключ сервисного аккаунта Google Cloud (Service Account Key).
 
+Конечно ✅
+Вот красиво оформленный, полный и понятный текст в **Markdown**, который можно использовать как внутреннюю инструкцию для настройки сервисного аккаунта Google Cloud с нужными правами:
+
 ---
 
-### 🧩 1. Войдите в Google Cloud Console
+# 🔐 Настройка сервисного аккаунта Google Cloud для проекта `superbotai`
 
-Перейдите по адресу:
+Этот документ описывает процесс создания и настройки сервисного аккаунта с полным доступом к основным Google API: **Drive**, **Sheets**, **BigQuery**, **Cloud Storage**, **Docs**, **Slides**, и другим.
+
+---
+
+## 🧩 1. Вход в Google Cloud Console
+
+Перейдите в панель управления Google Cloud:
 👉 [https://console.cloud.google.com/](https://console.cloud.google.com/)
 
-Убедитесь, что вы вошли под аккаунтом, у которого есть доступ к нужному проекту (`project_id` у вас — `superbotai`).
+Убедитесь, что вы вошли под аккаунтом с правами администратора и выберите проект **superbotai** (или создайте новый при необходимости).
 
 ---
 
-### ⚙️ 2. Выберите проект
+## 👤 2. Создание сервисного аккаунта
 
-В верхнем меню выберите ваш проект **superbotai**
-(или создайте новый, если его ещё нет).
+1. Откройте раздел **IAM & Admin → Service Accounts**
+   [https://console.cloud.google.com/iam-admin/serviceaccounts](https://console.cloud.google.com/iam-admin/serviceaccounts)
+2. Нажмите **Create Service Account**.
+3. Укажите:
 
----
-
-### 👤 3. Перейдите в раздел **IAM & Admin → Service Accounts**
-
-* Слева в меню: **IAM & Admin → Service Accounts**
-  (или напрямую: [https://console.cloud.google.com/iam-admin/serviceaccounts](https://console.cloud.google.com/iam-admin/serviceaccounts))
-* Найдите существующий сервисный аккаунт
-  или нажмите **Create Service Account**.
-
----
-
-### 🧱 4. Создайте сервисный аккаунт (если нужно)
-
-Укажите:
-
-* **Name:** например, `superbotai`
-* **ID:** генерируется автоматически
-* **Description:** любое описание
-
-Нажмите **Create and continue**
-
-Затем:
-
-* Добавьте нужные роли (например, `Editor`, `Storage Admin`, `BigQuery User` — зависит от целей)
-* Нажмите **Done**
+   * **Name:** `superbotai`
+   * **Description:** Сервисный аккаунт для доступа к API
+4. Нажмите **Create and continue**.
+5. Добавьте базовые роли (можно позже отредактировать).
+6. Нажмите **Done**.
 
 ---
 
-### 🔑 5. Создайте ключ
+## 🔑 3. Создание ключа JSON
 
-Когда аккаунт создан:
+1. Найдите созданный аккаунт в списке.
+2. Перейдите на вкладку **Keys**.
+3. Нажмите **Add key → Create new key**.
+4. Выберите формат **JSON**.
+5. Нажмите **Create** — файл автоматически скачается.
 
-1. Откройте его в списке.
-2. Перейдите на вкладку **Keys**
-3. Нажмите **Add key → Create new key**
-4. Выберите формат: **JSON**
-5. Нажмите **Create**
+📄 **Этот файл выглядит примерно так:**
 
-Файл с ключом автоматически скачается на ваш компьютер — это именно тот JSON, который вы показали в примере.
+```json
+{
+  "type": "service_account",
+  "project_id": "superbotai",
+  "private_key_id": "40...30",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMI...jj\n-----END PRIVATE KEY-----\n",
+  "client_email": "superbotai@superbotai.iam.gserviceaccount.com",
+  "client_id": "10...7",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/superbotai%40superbotai.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+```
+
+💡 Этот файл нужно хранить **в секрете** — не размещайте его в GitHub, не пересылайте через мессенджеры и не публикуйте публично.
 
 ---
 
-### ⚠️ 6. Безопасность
+## ⚙️ 4. Активация необходимых API
 
-* Этот файл содержит **приватный ключ**, его **нельзя публиковать** или отправлять в публичные репозитории.
-* Если файл утёк — **немедленно удалите ключ** и создайте новый.
+Перейдите в раздел
+👉 [**APIs & Services → Library**](https://console.cloud.google.com/apis/library)
 
-Удалить можно в том же разделе “Keys” — кнопка **Delete key**.
+Для проекта `superbotai` включите (Enable) следующие API:
+
+| Категория                    | API                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Документы и Таблицы**      | Google Drive API, Google Sheets API, Google Docs API, Google Slides API                             |
+| **Хранилище и данные**       | Cloud Storage API, Google Cloud Storage JSON API, BigQuery API, BigQuery Storage API                |
+| **BigQuery экосистема**      | BigQuery Connection API, BigQuery Data Policy API, BigQuery Migration API, BigQuery Reservation API |
+| **Мониторинг и логирование** | Cloud Logging API, Cloud Monitoring API, Cloud Trace API                                            |
+| **Базы и аналитика**         | Cloud Datastore API, Cloud SQL Admin API, Analytics Hub API, Dataform API                           |
+| **Инфраструктура и сервисы** | Cloud Dataplex API, Service Management API, Service Usage API, Google Cloud APIs                    |
+
+После включения каждый сервис отобразится в списке активных API вашего проекта.
 
 ---
 
-### ✅ 7. Использование
+## 🧱 5. Назначение ролей сервисному аккаунту
 
-Для подключения, например, к Google API, используйте переменную окружения:
+Перейдите в:
+**IAM & Admin → IAM**
+[https://console.cloud.google.com/iam-admin/iam](https://console.cloud.google.com/iam-admin/iam)
+
+Найдите аккаунт `superbotai@superbotai.iam.gserviceaccount.com` и нажмите **Edit principal**.
+Добавьте следующие роли:
+
+| API                        | Роль                                                        |
+| -------------------------- | ----------------------------------------------------------- |
+| Google Drive               | `roles/drive.admin` или `roles/drive.file`                  |
+| Google Sheets              | `roles/sheets.editor`                                       |
+| Google Docs                | `roles/docs.editor`                                         |
+| Google Slides              | `roles/slides.editor`                                       |
+| BigQuery                   | `roles/bigquery.admin`                                      |
+| BigQuery Storage           | `roles/bigquerystorage.admin`                               |
+| Cloud Storage              | `roles/storage.admin`                                       |
+| Cloud SQL                  | `roles/cloudsql.admin`                                      |
+| Cloud Logging              | `roles/logging.admin`                                       |
+| Cloud Monitoring           | `roles/monitoring.admin`                                    |
+| Cloud Trace                | `roles/cloudtrace.admin`                                    |
+| Dataform                   | `roles/dataform.admin`                                      |
+| Dataplex                   | `roles/dataplex.admin`                                      |
+| Service Management / Usage | `roles/servicemanagement.admin`, `roles/serviceusage.admin` |
+
+> 💡 Можно добавить несколько ролей сразу, нажав **Add another role**.
+
+---
+
+## 🧾 6. Проверка прав и активности
+
+Проверьте, что всё работает корректно:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/key.json"
+# Аутентификация через ключ
+gcloud auth activate-service-account --key-file=superbotai-key.json
+
+# Просмотр активированных API
+gcloud services list --enabled
+
+# Проверка BigQuery
+gcloud bigquery datasets list
+
+# Проверка Cloud Storage
+gcloud storage buckets list
 ```
+
+Если команды выполняются без ошибок — настройки успешны ✅
+
+---
+
+## 🧰 7. Использование в коде
+
+Пример использования ключа в Python:
+
+```python
+import os
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# Укажите путь к JSON-файлу
+creds = service_account.Credentials.from_service_account_file("superbotai-key.json")
+
+# Пример: подключение к Google Drive
+service = build("drive", "v3", credentials=creds)
+results = service.files().list(pageSize=10).execute()
+print(results.get("files", []))
+```
+
+---
+
+## ⚠️ 8. Безопасность и управление ключами
+
+* Не храните ключ в общих репозиториях.
+* Храните файл в **Google Secret Manager** или шифруйте с помощью KMS.
+* При утечке — **немедленно удалите** старый ключ и создайте новый:
+
+  * **Service Account → Keys → Delete Key → Create New Key**
+
+---
+
+## ✅ Готово!
+
+Теперь ваш сервисный аккаунт полностью готов к работе с:
+
+* Google Drive
+* Google Sheets
+* Google Docs
+* Google Slides
+* BigQuery
+* Cloud Storage
+* И другими сервисами Google Cloud.
 
 ---
 
