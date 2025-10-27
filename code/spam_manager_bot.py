@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 # Токен бота-менеджера рассылок (укажите свой)
-SPAM_BOT_TOKEN = "8372197433:AAG8gj4gYNXuhEr90PJFs55h7SmTjpXpsiM" # @hc_spam_bot
-#SPAM_BOT_TOKEN = "8012965357:AAFN0WR9CUcO8p81WZgez0f8pw5SpGMytZg" # @d4_spm_bot
+SPAM_BOT_TOKEN = "8...M" # @hc_spam_bot
+#SPAM_BOT_TOKEN = "8...g" # @d4_spm_bot
 
 # ID пользователей, которые могут управлять рассылками
 AUTHORIZED_USERS = [
