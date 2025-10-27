@@ -33,14 +33,15 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 # Токен бота-менеджера рассылок (укажите свой)
-SPAM_BOT_TOKEN = "83...iM" # @hc_spam_bot
-#SPAM_BOT_TOKEN = "80...Zg" # @d4_spm_bot
+SPAM_BOT_TOKEN = "8372197433:AAG8gj4gYNXuhEr90PJFs55h7SmTjpXpsiM" # @hc_spam_bot
+#SPAM_BOT_TOKEN = "8012965357:AAFN0WR9CUcO8p81WZgez0f8pw5SpGMytZg" # @d4_spm_bot
 
 # ID пользователей, которые могут управлять рассылками
 AUTHORIZED_USERS = [
     1119720393,  # Андрей Петров (админ)
     # Добавьте сюда ID других администраторов
-    123456789 # пример
+    339717185, # Наталия Богослов HR
+    305098309 # Кристина Кочеровская Hr-менеджер @Geniesserin_scheriff    
 ]
 
 # Пути к файлам
