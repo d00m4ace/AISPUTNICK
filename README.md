@@ -114,6 +114,12 @@ https://d00m4ace.com/files/ai_sputnik_telegram_bot.pdf
 
 ## Установка 
 
+Установка ИИ СПУТНИК С 0 на Windows 10
+
+**Видео:**
+- [YouTube](https://www.youtube.com/watch?v=pSopZpmAJRk)
+- [VK Видео](https://vkvideo.ru/video-233018674_456239026)
+
 ---
 
 # 💻 Настройка рабочего окружения под Windows 10
