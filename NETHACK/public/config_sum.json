@@ -1,0 +1,24 @@
+{
+  "api_key":  "s...EA",
+  "source_dir": "./test_ai_bot_data/netrunner/md_files",
+  "summary_dir": "./test_ai_bot_data/netrunner/sum",
+  
+  "summary_model": "gpt-5-nano",
+  "summary_max_chars": 500,
+  "block_summary_max_chars": 200,
+  "large_doc_threshold_tokens": 10000,
+  "content_max_tokens": null,
+  
+  "selection_model": "gpt-5-mini",
+  "selection_retries": 3,
+  "max_files_for_answer": 1,
+  
+  "answer_model": "gpt-5",
+  "answer_max_tokens": null,
+  
+  "model_contexts": {
+    "gpt-5": 256000,
+    "gpt-5-mini": 128000,
+    "gpt-5-nano": 64000
+  }
+}

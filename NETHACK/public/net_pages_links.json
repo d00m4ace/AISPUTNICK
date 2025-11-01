@@ -1,0 +1,109 @@
+{
+  "pages": [
+    {
+      "id": "",
+      "url": "https://disk.360.yandex.ru/d/PR...xw",
+      "provider": "yandex_disk",
+      "auth_config": "yandex_disk_main",
+      "enabled": true,
+      "check_updates": true,
+      "description": "HR внутренние документы для ознакомления"
+    },
+    {
+      "id": "",
+      "url": "https://disk.360.yandex.ru/d/PRh...xw",
+      "provider": "yandex_disk_list",
+      "auth_config": "yandex_disk_main",
+      "enabled": true,
+      "check_updates": true,
+      "description": "ссылки на сами HR документы для ознакомления",
+      "include_folders": true,
+      "include_file_types": false,
+      "include_modified_date": false,
+      "include_size": false,
+      "sort_by": "name",
+      "group_by_directory": false
+    },  
+    {
+      "id": "",
+      "url": "https://drive.google.com/drive/folders/0B_...Vw",
+      "provider": "google_gdrive_list",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true,
+      "description": "Креативы по всем играм.",
+      "skip_file_patterns": [
+        "*.tmp",
+        "~*",
+        ".*",
+        "Thumbs.db"
+      ],
+      "skip_folder_patterns": [
+        "Backup",
+        "node_modules",
+        "__pycache__",
+        ".git",
+        "temp*"
+      ],
+      "include_folders": true,
+      "include_file_types": false,
+      "include_modified_date": false,
+      "include_size": false,
+      "sort_by": "name",
+      "group_by_type": false
+    },	
+    {
+      "id": "",
+      "url": "https://drive.google.com/drive/u/0/folders/1D...ax",
+      "provider": "google_gdrive_list",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true,
+      "description": "Выпуски Бортового журнала ХК/HeroCraft",
+      "skip_file_patterns": [
+        "*.tmp",
+        "~*",
+        ".*",
+        "Thumbs.db"
+      ],
+      "skip_folder_patterns": [
+        "Backup",
+        "node_modules",
+        "__pycache__",
+        ".git",
+        "temp*"
+      ],
+      "include_folders": true,
+      "include_file_types": false,
+      "include_modified_date": false,
+      "include_size": false,
+      "sort_by": "name",
+      "group_by_type": false
+    },	
+    {
+      "id": "",
+      "url": "https://docs.google.com/spreadsheets/d/1618/",
+      "provider": "google_docs",
+      "auth_config": "google_main",
+      "enabled": true,
+      "check_updates": true
+    },	
+    {
+      "id": "wiki_a9b540_f5e195",
+      "url": "https://wiki.yandex.ru/homepage/development/tenjin/",
+      "provider": "yandex_wiki",
+      "auth_config": "yandex_main",
+      "enabled": true,
+      "check_updates": true
+    },	
+    {
+      "id": "",
+      "url": "https://buildin.ai/herocraft/1e..76",
+      "provider": "buildin",
+      "auth_config": "buildin_main",
+      "enabled": true,
+      "check_updates": true,
+      "include_gdrive_content": false
+    }	
+  ]
+}

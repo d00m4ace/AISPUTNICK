@@ -13,6 +13,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import holidays
 
+from utils.markdown_utils import escape_markdown_v2
+
 logger = logging.getLogger(__name__)
 
 # ============================================
@@ -465,8 +467,8 @@ class SpamExecutor:
         link = broadcast.get("link")
 
         # Формируем текст
-        final_text = f"{message_text}\n\n🔗 {link}" if link else message_text
-        final_text += f"\n\n_Рассылка #{broadcast_id}_"
+        final_text = f"{escape_markdown_v2(message_text)}\n\n🔗 {escape_markdown_v2(link)}" if link else message_text
+        final_text += f"\n\n_Рассылка \\#{escape_markdown_v2(broadcast_id)}_"
 
         successful = 0
         failed = 0
@@ -480,7 +482,7 @@ class SpamExecutor:
                 continue
 
             try:
-                await self.bot.send_message(uid, final_text, parse_mode="Markdown", disable_web_page_preview=False)
+                await self.bot.send_message(uid, final_text, parse_mode="MarkdownV2", disable_web_page_preview=False)
                 successful += 1
                 await asyncio.sleep(3)  # Задержка для избежания ограничений Telegram
             

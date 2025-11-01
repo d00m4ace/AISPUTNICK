@@ -1,0 +1,153 @@
+{
+  "pages": {
+	  
+    "ydisk_590bba3fe9bb": {
+      "title": "Ознакомление с документами (для удаленщиков).pdf",
+      "url": "https://disk.yandex.ru/client/disk?dialog=slider&idDialog=%2Fdisk%2F%D0...%D0%29.pdf",
+      "ydisk_file_path": "Ознакомление с документами (для удаленщиков).pdf",
+      "ydisk_modified_time": "2025-07-29T07:08:46+00:00",
+      "file_name": "ydisk_590bba3fe9bb.md",
+      "file_path": "md_files\\ydisk_590bba3fe9bb.md",
+      "export_format": "markdown",
+      "mime_type": "application/pdf",
+      "file_size": 40544,
+      "last_sync": "2025-10-10T13:03:30.496551",
+      "provider": "yandex_disk",
+      "parent_folder": "",
+      "folder_url": "https://disk.360.yandex.ru/d/PR...xw",
+      "path_in_folder": "Ознакомление с документами (для удаленщиков).pdf"
+    },
+
+    "drive_654277_2a136f": {
+      "title": "Creatives - File List",
+      "url": "https://drive.google.com/drive/folders/0B_elP...Vw",
+      "file_name": "drive_654277_2a136f.md",
+      "file_path": "md_files\\drive_654277_2a136f.md",
+      "export_format": "markdown",
+      "last_modified": "2025-10-10T13:04:57.365236",
+      "last_sync": "2025-10-10T13:04:57.366652",
+      "provider": "google_gdrive_list"
+    },
+
+    "sheet_73ef7f_4497a2": {
+      "title": "!_contactshc",
+      "url": "https://docs.google.com/spreadsheets/d/16...18/",
+      "file_name": "sheet_73ef7f_4497a2.md",
+      "file_path": "md_files\\sheet_73ef7f_4497a2.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-30T11:23:43.241Z",
+      "last_sync": "2025-10-10T13:05:32.123171",
+      "provider": "google_docs"
+    },
+
+    "doc_27b4a4_bd2aaa": {
+      "title": "Ссылки на различные документы компании Хирокрафт",
+      "url": "https://docs.google.com/document/d/1wpgbX_bIU...U/",
+      "file_name": "doc_27b4a4_bd2aaa.md",
+      "file_path": "md_files\\doc_27b4a4_bd2aaa.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-25T12:00:03.848Z",
+      "last_sync": "2025-10-10T13:05:48.843941",
+      "provider": "google_docs"
+    },
+	
+    "gdrive_1zhFIps9y5ey": {
+      "title": "Инструкция для сотрудников, выплаты в $",
+      "url": "https://drive.google.com/file/d/1z...HIk",
+      "gdrive_file_id": "1zhFIps9y5eyVohevkv68eFCYthEDkYW9i2-moAcOHIk",
+      "gdrive_modified_time": "2025-10-10T08:37:37.618Z",
+      "file_name": "gdrive_1zhFIps9y5ey.md",
+      "file_path": "md_files\\gdrive_1zhFIps9y5ey.md",
+      "export_format": "markdown",
+      "mime_type": "application/vnd.google-apps.document",
+      "last_sync": "2025-10-10T13:06:45.588642",
+      "provider": "google_gdrive",
+      "parent_folder": "",
+      "folder_url": "https://drive.google.com/drive/u/0/folders/1Oau...bSB",
+      "path_in_folder": "Инструкция для сотрудников, выплаты в $",
+      "had_429_error": false,
+      "successfully_recovered": false
+    },
+	
+    "gdrive_1BkZou3NjjXy": {
+      "title": "Структура компании.pdf",
+      "url": "https://drive.google.com/file/d/1Bk...GP",
+      "gdrive_file_id": "1BkZou3NjjXytbiSvpD_K2qdksZm45XGP",
+      "gdrive_modified_time": "2025-09-11T10:50:52.597Z",
+      "file_name": "gdrive_1BkZou3NjjXy.md",
+      "file_path": "md_files\\gdrive_1BkZou3NjjXy.md",
+      "export_format": "markdown",
+      "mime_type": "application/pdf",
+      "last_sync": "2025-10-10T13:06:49.272754",
+      "provider": "google_gdrive",
+      "parent_folder": "",
+      "folder_url": "https://drive.google.com/drive/u/0/folders/1Oa...SB",
+      "path_in_folder": "Структура компании.pdf",
+      "had_429_error": false,
+      "successfully_recovered": false
+    },
+	
+    "gdrive_1MNmjsJSRbVx": {
+      "title": "Teamwork, настройка профиля.docx",
+      "url": "https://drive.google.com/file/d/1M...sZ",
+      "gdrive_file_id": "1MNmjsJSRbVxdMvio7eBGderOTV1S1VsZ",
+      "gdrive_modified_time": "2023-09-14T10:18:42.852Z",
+      "file_name": "gdrive_1MNmjsJSRbVx.md",
+      "file_path": "md_files\\gdrive_1MNmjsJSRbVx.md",
+      "export_format": "markdown",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "last_sync": "2025-10-10T13:07:06.403202",
+      "provider": "google_gdrive",
+      "parent_folder": "",
+      "folder_url": "https://drive.google.com/drive/u/0/folders/1Oau...SB",
+      "path_in_folder": "Teamwork, настройка профиля.docx",
+      "had_429_error": false,
+      "successfully_recovered": false
+    },
+	
+    "wiki_9c57dd_693779": {
+      "title": "ЮМани",
+      "url": "https://wiki.yandex.ru/homepage/development/yoomoney/",
+      "file_name": "wiki_9c57dd_693779.md",
+      "file_path": "md_files\\wiki_9c57dd_693779.md",
+      "export_format": "markdown",
+      "last_modified": "2025-04-03T14:25:24.151Z",
+      "last_sync": "2025-10-10T13:07:26.693089",
+      "provider": "yandex_wiki"
+    },
+	
+    "wiki_972e42_402864": {
+      "title": "FAQ по Google Play",
+      "url": "https://wiki.yandex.ru/users/yana/faq-po-google-play/",
+      "file_name": "wiki_972e42_402864.md",
+      "file_path": "md_files\\wiki_972e42_402864.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-19T14:25:32.870Z",
+      "last_sync": "2025-10-10T13:07:30.137403",
+      "provider": "yandex_wiki"
+    },
+	
+    "sheet_d9b26b_121349": {
+      "title": "_TRANSLATION BASE",
+      "url": "https://docs.google.com/spreadsheets/d/1zl...XM/",
+      "file_name": "sheet_d9b26b_121349.md",
+      "file_path": "md_files\\sheet_d9b26b_121349.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-19T12:29:46.671Z",
+      "last_sync": "2025-10-10T13:08:52.144405",
+      "provider": "google_docs"
+    },
+	
+    "buildin_efb284_a7456a": {
+      "title": "Projects",
+      "url": "https://buildin.ai/herocraft/1ea...76",
+      "file_name": "buildin_efb284_a7456a.md",
+      "file_path": "md_files\\buildin_efb284_a7456a.md",
+      "export_format": "markdown",
+      "last_modified": "2025-09-18T15:29:25.050Z",
+      "last_sync": "2025-10-10T13:08:40.562026",
+      "provider": "buildin"
+    }
+	
+  }
+}

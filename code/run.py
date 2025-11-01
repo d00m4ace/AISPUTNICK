@@ -84,39 +84,48 @@ class AIBot:
 
     async def cmd_check_spam(self, message: types.Message):
         user_id = str(message.from_user.id)
-
         if not await self.user_manager.is_admin(user_id):
             await message.reply("⛔ Команда доступна только администраторам")
             return
-
+        
         # Получаем расписание
         schedule_text = self.spam_executor.get_broadcasts_schedule(months=6)
-    
+        
+        # Убираем ** из текста
+        schedule_text = schedule_text.replace('**', '')        
+        
         # Разбиваем на части, если текст слишком длинный (лимит Telegram - 4096 символов)
         max_length = 4000
-    
+        
         if len(schedule_text) <= max_length:
-            await message.reply(schedule_text, parse_mode="Markdown")
+            # РЕШЕНИЕ 1: Отключить parse_mode (самое простое)
+            #await message.reply(schedule_text, parse_mode=None)
+                       
+            await message.reply(escape_markdown_v2(schedule_text), parse_mode="MarkdownV2")
+            
+            # ИЛИ РЕШЕНИЕ 3: Использовать HTML вместо Markdown
+            # await message.reply(schedule_text, parse_mode="HTML")
         else:
             # Разбиваем на части
             parts = []
             current_part = ""
-        
+            
             for line in schedule_text.split("\n"):
                 if len(current_part) + len(line) + 1 > max_length:
                     parts.append(current_part)
                     current_part = line + "\n"
                 else:
                     current_part += line + "\n"
-        
+            
             if current_part:
                 parts.append(current_part)
-        
+            
             # Отправляем по частям
             for i, part in enumerate(parts, 1):
                 header = f"📄 Часть {i}/{len(parts)}\n\n" if len(parts) > 1 else ""
-                await message.reply(header + part, parse_mode="Markdown")
-                await asyncio.sleep(0.5)  # Небольшая задержка между сообщениями
+                # РЕШЕНИЕ 1: Без parse_mode
+                await message.reply(header + part, parse_mode=None)
+                await asyncio.sleep(0.5)
 
     def _setup_handlers(self):
 
