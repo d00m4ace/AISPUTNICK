@@ -194,11 +194,8 @@ class SimpleAgentHandler(BaseAgentHandler):
         dp.message.register(self.commands_handler.cmd_agents_user, F.text == "/agents_user")
         
         # Универсальные команды управления агентами
-        dp.message.register(self.commands_handler.cmd_agent_stop, F.text == "/agent_stop")
+        dp.message.register(self.commands_handler.cmd_agent_stop, F.text == "/stop")
         dp.message.register(self.commands_handler.cmd_agent_status, F.text == "/agent_status")
-        
-        # Для обратной совместимости оставляем /stop_chat как алиас
-        dp.message.register(self.commands_handler.cmd_agent_stop, F.text == "/stop_chat")
         
         # Обработчик отмены задачи
         dp.callback_query.register(self.filejob_handler.handle_cancel_job, F.data.startswith("cancel_job_"))
