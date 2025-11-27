@@ -1,3 +1,5 @@
+python-telegram-bot
+google-genai
 holidays
 aiofiles
 aiogram
