@@ -18,6 +18,8 @@ https://d00m4ace.com/files/ai_sputnik_telegram_bot.pdf
 # NEW: Telegram бот для Google Nano Banana Pro.
 Добавил отдельно в AISPUTNICK мини Telegram бота для работы с Google ИИ.
 
+Пост с видео и примером: https://t.me/d00m4ace_blog/690
+
 Этот бот позволяет генерировать изображения с помощью модели Gemini 3 Pro Image (Nano Banana Pro).
 
 Загрузи свои изображения для использования в качестве референсов, а затем используй команду /generate для создания новых изображений на основе текстового промпта и выбранных референсов.
