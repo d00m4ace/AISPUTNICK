@@ -15,7 +15,7 @@
 Краткое введение в AI Sputnik Телеграм-бот .pdf файл:
 https://d00m4ace.com/files/ai_sputnik_telegram_bot.pdf
 
-# NEW: Telegram бота для работы с Google ИИ.
+# NEW: Telegram бот для работы с Google Nano Banana Pro.
 Добавил отдельно в AISPUTNICK мини Telegram бота для работы с Google ИИ.
 
 Этот бот позволяет генерировать изображения с помощью модели Gemini 3 Pro Image (Nano Banana Pro).
