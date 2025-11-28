@@ -3,9 +3,15 @@ import json
 import asyncio
 import base64
 import mimetypes
+
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
+
+# ✅ КРИТИЧЕСКИ ВАЖНО: Патч aiohttp ДО импорта genai
+import aiohttp.streams
+aiohttp.streams.DEFAULT_LIMIT = 100 * 1024 * 1024  # 100MB для 4K изображений
+print(f"✅ aiohttp patched: chunk limit = {aiohttp.streams.DEFAULT_LIMIT / 1024 / 1024:.0f}MB")
 
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
@@ -29,7 +35,7 @@ from google.genai import types
 
 # ========== Настройки (подставь свои) ==========
 
-TELEGRAM_TOKEN = "78...n0"
+TELEGRAM_TOKEN = "7...0"
 GEMINI_API_KEY = "A...g"
 USERS_FILE = "sputnkik_bot_users/users.json"
 IMAGES_BASE_DIR = "nano_user_images"
@@ -181,12 +187,20 @@ class ImageStorage:
         images = sorted(user_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
         return images[:limit]
 
+
 class GeminiImageGenerator:
-    """Асинхронный генератор изображений через Gemini API"""
+    """Генератор изображений через Gemini API БЕЗ стриминга (надёжнее для 4K)"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.model = "gemini-3-pro-image-preview"
+        
+        # ✅ Увеличиваем лимит aiohttp до 100MB
+        if aiohttp.streams.DEFAULT_LIMIT < 100 * 1024 * 1024:
+            aiohttp.streams.DEFAULT_LIMIT = 100 * 1024 * 1024
+            log_console("AIOHTTP_PATCH", "Increased aiohttp chunk limit for 4K images", {
+                "new_limit_mb": "100MB"
+            })
     
     async def generate_image(
         self,
@@ -197,15 +211,18 @@ class GeminiImageGenerator:
         image_size: str = "1K"
     ) -> Optional[bytes]:
         """
-        Нативная асинхронная генерация изображения с защитой от timeout
+        NON-STREAMING генерация изображения (надёжнее для больших изображений)
         """
         try:
-            log_console("GEMINI_START", "Starting image generation", {
+            log_console("GEMINI_START", "Starting image generation (non-streaming)", {
                 "prompt_length": len(prompt),
                 "num_references": len(reference_images),
                 "temperature": temperature,
                 "aspect_ratio": aspect_ratio,
-                "timeout": f"{GEMINI_GENERATION_TIMEOUT}s"
+                "image_size": image_size,
+                "timeout": f"{GEMINI_GENERATION_TIMEOUT}s",
+                "aiohttp_limit_mb": f"{aiohttp.streams.DEFAULT_LIMIT / 1024 / 1024:.0f}MB",
+                "mode": "NON_STREAMING"
             })
             
             client = genai.Client(api_key=self.api_key)
@@ -218,7 +235,7 @@ class GeminiImageGenerator:
                         data=img_data
                     )
                 )
-                log_console("GEMINI_REF", f"Added reference image {idx+1}", {"size_bytes": len(img_data)})
+                log_console("GEMINI_REF", f"Added reference image {idx+1}", {"size_kb": len(img_data)//1024})
             
             parts.append(types.Part.from_text(text=prompt))
         
@@ -229,30 +246,39 @@ class GeminiImageGenerator:
                 response_modalities=["IMAGE"],
                 image_config=types.ImageConfig(
                     aspect_ratio=aspect_ratio,
+                    image_size=image_size,
                 ),
             )
         
-            # ✅ ОБЁРТКА С ТАЙМАУТОМ
+            # ✅ БЕЗ СТРИМИНГА - получаем полный ответ сразу
             async def _generate_with_timeout():
-                response_stream = await client.aio.models.generate_content_stream(
+                log_console("GEMINI_API_CALL", "Calling generate_content (blocking until complete)")
+                
+                response = await client.aio.models.generate_content(
                     model=self.model,
                     contents=contents,
                     config=generate_content_config,
                 )
-            
-                async for chunk in response_stream:
-                    if (chunk.candidates and
-                        chunk.candidates[0].content and
-                        chunk.candidates[0].content.parts):
+                
+                log_console("GEMINI_RESPONSE", "Received response from API", {
+                    "has_candidates": bool(response.candidates),
+                    "num_candidates": len(response.candidates) if response.candidates else 0
+                })
+                
+                if (response.candidates and
+                    response.candidates[0].content and
+                    response.candidates[0].content.parts):
                     
-                        part = chunk.candidates[0].content.parts[0]
-                    
+                    for part_idx, part in enumerate(response.candidates[0].content.parts):
                         if part.inline_data and part.inline_data.data:
                             log_console("GEMINI_SUCCESS", "Image generated successfully", {
-                                "image_size_bytes": len(part.inline_data.data)
+                                "image_size_bytes": len(part.inline_data.data),
+                                "image_size_mb": f"{len(part.inline_data.data) / 1024 / 1024:.2f}MB",
+                                "part_index": part_idx
                             })
                             return part.inline_data.data
-            
+                
+                log_console("GEMINI_NO_IMAGE", "Response received but no image data found")
                 return None
             
             # ✅ ПРИМЕНЯЕМ ТАЙМАУТ
@@ -271,12 +297,14 @@ class GeminiImageGenerator:
             return None
         
         except Exception as e:
+            import traceback
             log_console(
                 "GEMINI_ERROR", 
                 "Error in generation", 
                 {"error": str(e), "trace": traceback.format_exc()}
             )
             return None
+
 
 # ✅ Глобальные объекты
 user_manager = UserManager(USERS_FILE)
@@ -538,6 +566,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("2:3", callback_data="ratio_2:3")],
             [InlineKeyboardButton("4:3", callback_data="ratio_4:3"),
              InlineKeyboardButton("3:4", callback_data="ratio_3:4")],
+            [InlineKeyboardButton("4:3", callback_data="ratio_5:4"),
+             InlineKeyboardButton("3:4", callback_data="ratio_4:5")],
             [InlineKeyboardButton("16:9", callback_data="ratio_16:9"),
              InlineKeyboardButton("9:16", callback_data="ratio_9:16")],
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
