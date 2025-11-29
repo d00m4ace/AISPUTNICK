@@ -6,12 +6,14 @@ import mimetypes
 
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # ✅ КРИТИЧЕСКИ ВАЖНО: Патч aiohttp ДО импорта genai
 import aiohttp.streams
 aiohttp.streams.DEFAULT_LIMIT = 100 * 1024 * 1024  # 100MB для 4K изображений
 print(f"✅ aiohttp patched: chunk limit = {aiohttp.streams.DEFAULT_LIMIT / 1024 / 1024:.0f}MB")
+
+import concurrent.futures
 
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
@@ -189,122 +191,125 @@ class ImageStorage:
 
 
 class GeminiImageGenerator:
-    """Генератор изображений через Gemini API БЕЗ стриминга (надёжнее для 4K)"""
+    """Генератор через синхронный API в отдельном потоке"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.model = "gemini-3-pro-image-preview"
-        
-        # ✅ Увеличиваем лимит aiohttp до 100MB
-        if aiohttp.streams.DEFAULT_LIMIT < 100 * 1024 * 1024:
-            aiohttp.streams.DEFAULT_LIMIT = 100 * 1024 * 1024
-            log_console("AIOHTTP_PATCH", "Increased aiohttp chunk limit for 4K images", {
-                "new_limit_mb": "100MB"
-            })
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    
+    def _sync_generate(
+        self,
+        prompt: str,
+        reference_images: List[bytes],
+        temperature: float,
+        aspect_ratio: str,
+        image_size: str
+    ) -> Tuple[Optional[bytes], Optional[str]]:
+        """Синхронная генерация в отдельном потоке"""
+        try:
+            # ✅ СИНХРОННЫЙ КЛИЕНТ
+            client = genai.Client(api_key=self.api_key)
+            
+            parts = []
+            for img_data in reference_images:
+                parts.append(types.Part.from_bytes(mime_type="image/png", data=img_data))
+            parts.append(types.Part.from_text(text=prompt))
+            
+            contents = [types.Content(role="user", parts=parts)]
+            
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                response_modalities=["IMAGE", "TEXT"],
+                image_config=types.ImageConfig(
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                ),
+                # ✅ Можно добавить tools если нужен поиск
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            )
+            
+            # ✅ СИНХРОННЫЙ ВЫЗОВ (не aio)
+            response = client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config,
+            )
+            
+            if not response.candidates:
+                return None, "NO_CANDIDATES"
+            
+            candidate = response.candidates[0]
+            finish_reason = str(getattr(candidate, 'finish_reason', ''))
+            
+            if "SAFETY" in finish_reason:
+                return None, "SAFETY"
+            if "NO_IMAGE" in finish_reason:
+                return None, "NO_IMAGE"
+            
+            if not candidate.content or not candidate.content.parts:
+                return None, f"NO_CONTENT: {finish_reason}"
+            
+            for part in candidate.content.parts:
+                if part.inline_data and part.inline_data.data:
+                    return part.inline_data.data, None
+                if hasattr(part, 'text') and part.text:
+                    return None, f"MODEL_RETURNED_TEXT: {part.text[:300]}"
+            
+            return None, "NO_IMAGE_DATA"
+            
+        except ValueError as e:
+            if "Chunk too big" in str(e):
+                return None, "CHUNK_TOO_BIG"
+            return None, f"ERROR: {str(e)}"
+        except Exception as e:
+            return None, f"ERROR: {str(e)}"
     
     async def generate_image(
         self,
         prompt: str,
         reference_images: List[bytes],
-        temperature: float = 0.85,
+        temperature: float = 1.0,
         aspect_ratio: str = "16:9",
         image_size: str = "1K"
-    ) -> Optional[bytes]:
-        """
-        NON-STREAMING генерация изображения (надёжнее для больших изображений)
-        """
+    ) -> Tuple[Optional[bytes], Optional[str]]:
+        """Асинхронная обёртка над синхронным вызовом"""
+        
+        log_console("GEMINI_REQUEST", "Starting generation (sync in thread)", {
+            "prompt_preview": prompt[:150],
+            "num_refs": len(reference_images),
+            "image_size": image_size,
+        })
+        
+        loop = asyncio.get_event_loop()
+        
         try:
-            log_console("GEMINI_START", "Starting image generation (non-streaming)", {
-                "prompt_length": len(prompt),
-                "num_references": len(reference_images),
-                "temperature": temperature,
-                "aspect_ratio": aspect_ratio,
-                "image_size": image_size,
-                "timeout": f"{GEMINI_GENERATION_TIMEOUT}s",
-                "aiohttp_limit_mb": f"{aiohttp.streams.DEFAULT_LIMIT / 1024 / 1024:.0f}MB",
-                "mode": "NON_STREAMING"
-            })
-            
-            client = genai.Client(api_key=self.api_key)
-        
-            parts = []
-            for idx, img_data in enumerate(reference_images):
-                parts.append(
-                    types.Part.from_bytes(
-                        mime_type="image/png", 
-                        data=img_data
-                    )
-                )
-                log_console("GEMINI_REF", f"Added reference image {idx+1}", {"size_kb": len(img_data)//1024})
-            
-            parts.append(types.Part.from_text(text=prompt))
-        
-            contents = [types.Content(role="user", parts=parts)]
-        
-            generate_content_config = types.GenerateContentConfig(
-                temperature=temperature,
-                response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
-                ),
-            )
-        
-            # ✅ БЕЗ СТРИМИНГА - получаем полный ответ сразу
-            async def _generate_with_timeout():
-                log_console("GEMINI_API_CALL", "Calling generate_content (blocking until complete)")
-                
-                response = await client.aio.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=generate_content_config,
-                )
-                
-                log_console("GEMINI_RESPONSE", "Received response from API", {
-                    "has_candidates": bool(response.candidates),
-                    "num_candidates": len(response.candidates) if response.candidates else 0
-                })
-                
-                if (response.candidates and
-                    response.candidates[0].content and
-                    response.candidates[0].content.parts):
-                    
-                    for part_idx, part in enumerate(response.candidates[0].content.parts):
-                        if part.inline_data and part.inline_data.data:
-                            log_console("GEMINI_SUCCESS", "Image generated successfully", {
-                                "image_size_bytes": len(part.inline_data.data),
-                                "image_size_mb": f"{len(part.inline_data.data) / 1024 / 1024:.2f}MB",
-                                "part_index": part_idx
-                            })
-                            return part.inline_data.data
-                
-                log_console("GEMINI_NO_IMAGE", "Response received but no image data found")
-                return None
-            
-            # ✅ ПРИМЕНЯЕМ ТАЙМАУТ
             result = await asyncio.wait_for(
-                _generate_with_timeout(), 
+                loop.run_in_executor(
+                    self.executor,
+                    self._sync_generate,
+                    prompt,
+                    reference_images,
+                    temperature,
+                    aspect_ratio,
+                    image_size
+                ),
                 timeout=GEMINI_GENERATION_TIMEOUT
             )
             
+            image_data, error = result
+            if image_data:
+                log_console("GEMINI_SUCCESS", "Image generated", {
+                    "size_kb": len(image_data) // 1024
+                })
+            else:
+                log_console("GEMINI_FAILED", "Generation failed", {"error": error})
+            
             return result
-        
+            
         except asyncio.TimeoutError:
-            log_console(
-                "GEMINI_TIMEOUT", 
-                f"Generation exceeded {GEMINI_GENERATION_TIMEOUT}s timeout"
-            )
-            return None
-        
-        except Exception as e:
-            import traceback
-            log_console(
-                "GEMINI_ERROR", 
-                "Error in generation", 
-                {"error": str(e), "trace": traceback.format_exc()}
-            )
-            return None
-
+            log_console("GEMINI_TIMEOUT", "Generation timeout")
+            return None, "TIMEOUT"
 
 # ✅ Глобальные объекты
 user_manager = UserManager(USERS_FILE)
@@ -346,9 +351,11 @@ def get_user_settings(telegram_id: int) -> Dict:
 
 def format_settings_text(settings: Dict) -> str:
     """Форматирует настройки в читаемый текст"""
+    temp_emoji = "🔥" if settings['temperature'] > 0.7 else "❄️" if settings['temperature'] < 0.4 else "🌡"
+    
     return (
-        f"⚙️ Параметры генерации:\n"
-        f"  🌡 Температура: {settings['temperature']}\n"
+        f"⚙️ Параметры:\n"
+        f"  {temp_emoji} Температура: {settings['temperature']}\n"
         f"  📐 Соотношение: {settings['aspect_ratio']}\n"
         f"  📏 Размер: {settings['image_size']}"
     )
@@ -729,37 +736,48 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_console("PHOTO_ERROR", "Error saving uploaded photo", {"error": str(e), "trace": traceback.format_exc()})
         await update.message.reply_text("❌ Ошибка при сохранении изображения.")
 
-async def _background_generate_and_send(bot, chat_id: int, telegram_id: int, prompt: str, reference_images_paths: List[Path], settings: Dict):
-    """Фоновая задача: вызывает Gemini, сохраняет и шлёт изображение"""
+async def _background_generate_and_send(
+    bot, 
+    chat_id: int, 
+    telegram_id: int, 
+    prompt: str, 
+    reference_images_paths: List[Path], 
+    settings: Dict
+):
+    """Фоновая задача: генерация изображения и отправка результата"""
     generation_start_time = datetime.now()
     
     try:
         settings_text = format_settings_text(settings)
         
-        # ✅ SAFE SEND для начального сообщения
+        # Отправляем сообщение о начале генерации
         try:
             await safe_send_text(
                 bot, 
                 chat_id, 
-                f"🔄 Начинаю генерацию...\n\n"
+                f"🔄 Генерирую изображение...\n\n"
                 f"{settings_text}\n\n"
-                f"⏱ Это может занять до 5 минут\n"
-                f"💡 Я пришлю результат сюда, как только будет готово"
+                f"⏱ Это может занять 1-5 минут\n"
+                f"💡 Результат появится здесь автоматически"
             )
         except Exception as e:
-            log_console("START_GEN_MSG_ERROR", "Failed to send start generation message", {"error": str(e)})
+            log_console("START_MSG_ERROR", "Failed to send start message", {"error": str(e)})
         
-        # Подготовка референс-байтов
+        # Загружаем референсные изображения
         reference_images_data = []
         for p in reference_images_paths:
             try:
                 with open(p, "rb") as f:
                     img_data = f.read()
                     reference_images_data.append(img_data)
-                    log_console("REF_LOADED", f"Loaded reference", {"file": p.name, "size_kb": len(img_data)//1024})
+                    log_console("REF_LOADED", f"Loaded reference", {
+                        "file": p.name, 
+                        "size_kb": len(img_data) // 1024
+                    })
             except Exception as e:
                 log_console("REF_READ_ERROR", f"Failed to read {p}", {"error": str(e)})
 
+        # Логируем начало запроса
         AIRequestLogger.log({
             "event": "request_start",
             "user_id": telegram_id,
@@ -769,15 +787,16 @@ async def _background_generate_and_send(bot, chat_id: int, telegram_id: int, pro
             "settings": settings,
         })
 
-        # ✅ ГЕНЕРАЦИЯ С ЛОГАМИ
-        log_console("GENERATION_START", "Starting Gemini generation", {
+        log_console("GENERATION_START", "Calling Gemini API", {
             "user_id": telegram_id,
             "prompt_length": len(prompt),
+            "prompt_preview": prompt[:100],
             "num_refs": len(reference_images_data),
-            "timeout": f"{GEMINI_GENERATION_TIMEOUT}s"
+            "settings": settings,
         })
         
-        generated_bytes = await gemini_generator.generate_image(
+        # ✅ ВЫЗОВ ГЕНЕРАТОРА (возвращает tuple)
+        generated_bytes, error_reason = await gemini_generator.generate_image(
             prompt=prompt,
             reference_images=reference_images_data,
             temperature=settings.get("temperature", 1.0),
@@ -787,93 +806,192 @@ async def _background_generate_and_send(bot, chat_id: int, telegram_id: int, pro
 
         generation_duration = (datetime.now() - generation_start_time).total_seconds()
         
-        success = generated_bytes is not None
-        error_text = None
-        if not success:
-            error_text = "No image returned from generator (timeout or API error)"
-
+        # Логируем результат
         AIRequestLogger.log({
             "event": "request_end",
             "user_id": telegram_id,
             "prompt": prompt,
-            "success": success,
-            "error": error_text,
+            "success": generated_bytes is not None,
+            "error": error_reason,
             "settings": settings,
             "num_reference_images": len(reference_images_data),
             "duration_seconds": generation_duration,
+            "image_size_kb": len(generated_bytes) // 1024 if generated_bytes else 0,
         })
 
-        if not success:
+        # ✅ ОБРАБОТКА ОШИБОК
+        if error_reason or not generated_bytes:
             log_console("GENERATION_FAILED", "Image generation failed", {
                 "user_id": telegram_id,
-                "duration_seconds": generation_duration,
-                "error": error_text
+                "duration_seconds": round(generation_duration, 1),
+                "error": error_reason,
             })
+            
+            # Словарь понятных сообщений об ошибках
+            error_messages = {
+                "NO_IMAGE": (
+                    "❌ Модель не смогла создать изображение для этого промпта.\n\n"
+                    "💡 Советы:\n"
+                    "• Опишите ОДНО конкретное изображение\n"
+                    "• Используйте английский язык\n"
+                    "• Добавьте детали: стиль, цвета, композицию\n"
+                    "• Не просите несколько изображений сразу\n\n"
+                    f"⏱ Время: {int(generation_duration)}s"
+                ),
+                "SAFETY": (
+                    "❌ Промпт заблокирован фильтрами безопасности.\n\n"
+                    "Попробуйте переформулировать запрос, избегая:\n"
+                    "• Насилия и жестокости\n"
+                    "• Откровенного контента\n"
+                    "• Оскорбительных тем"
+                ),
+                "RECITATION": (
+                    "❌ Запрос отклонён из-за авторских прав.\n\n"
+                    "Не используйте:\n"
+                    "• Имена брендов и логотипы\n"
+                    "• Известных персонажей (Disney, Marvel и т.д.)\n"
+                    "• Реальных знаменитостей"
+                ),
+                "TIMEOUT": (
+                    f"❌ Превышено время ожидания ({int(generation_duration)}s)\n\n"
+                    "💡 Попробуйте:\n"
+                    "• Упростить промпт\n"
+                    "• Уменьшить размер (1K вместо 2K/4K)\n"
+                    "• Повторить попытку позже"
+                ),
+                "NO_CANDIDATES": (
+                    "❌ API не вернул результатов.\n\n"
+                    "Это может быть временная проблема. Попробуйте позже."
+                ),
+                "NO_IMAGE_DATA": (
+                    "❌ Ответ получен, но без изображения.\n\n"
+                    "Попробуйте другой промпт."
+                ),
+                "CHUNK_TOO_BIG": (
+                    "❌ Изображение слишком большое для передачи.\n\n"
+                    "💡 Решение:\n"
+                    "1. Откройте /settings\n"
+                    "2. Измените размер на 1K\n"
+                    "3. Попробуйте снова"
+                ),
+            }
+            
+            # Определяем сообщение об ошибке
+            if error_reason and error_reason.startswith("MODEL_RETURNED_TEXT:"):
+                # Модель вернула текст вместо изображения
+                model_text = error_reason.replace("MODEL_RETURNED_TEXT:", "").strip()
+                error_msg = (
+                    f"❌ Модель не смогла создать изображение и ответила текстом:\n\n"
+                    f"💬 _{model_text[:400]}{'...' if len(model_text) > 400 else ''}_\n\n"
+                    f"💡 Для генерации изображения опишите конкретную картинку, "
+                    f"а не просите придумать идеи.\n\n"
+                    f"⏱ Время: {int(generation_duration)}s"
+                )
+            elif error_reason and error_reason.startswith("ERROR:"):
+                # Общая ошибка API
+                error_detail = error_reason.replace("ERROR:", "").strip()
+                error_msg = (
+                    f"❌ Ошибка API: {error_detail[:200]}\n\n"
+                    f"Попробуйте позже или измените промпт."
+                )
+            else:
+                # Известная ошибка из словаря
+                error_msg = error_messages.get(
+                    error_reason, 
+                    f"❌ Неизвестная ошибка: {error_reason}\n\nПопробуйте другой промпт."
+                )
+            
+            try:
+                await safe_send_text(bot, chat_id, error_msg)
+            except Exception as e:
+                log_console("ERROR_MSG_SEND_FAILED", "Failed to send error message", {"error": str(e)})
+            
+            return
+
+        # ✅ УСПЕШНАЯ ГЕНЕРАЦИЯ
+        log_console("GENERATION_SUCCESS", "Image generated successfully", {
+            "user_id": telegram_id,
+            "duration_seconds": round(generation_duration, 1),
+            "image_size_kb": len(generated_bytes) // 1024,
+            "image_size_mb": f"{len(generated_bytes) / 1024 / 1024:.2f}",
+        })
+
+        # Сохраняем изображение
+        saved_path = image_storage.save_image(telegram_id, generated_bytes, prefix="generated")
+        
+        # Увеличиваем счётчик использования
+        usage_tracker.increment_usage(telegram_id)
+        remaining = usage_tracker.get_remaining(telegram_id)
+
+        # Формируем подпись
+        caption = (
+            f"✅ Изображение сгенерировано!\n\n"
+            f"📝 Промпт: _{prompt[:80]}{'...' if len(prompt) > 80 else ''}_\n"
+            f"🖼 Референсов: {len(reference_images_data)}\n"
+            f"⏱ Время: {int(generation_duration)}s\n"
+            f"📊 Осталось сегодня: {remaining}/{DAILY_LIMIT}\n\n"
+            f"{settings_text}"
+        )
+
+        # Отправляем превью (сжатое фото)
+        try:
+            await safe_send_photo(bot, chat_id, saved_path, caption=caption)
+            log_console("PHOTO_SENT", "Preview photo sent", {"path": str(saved_path)})
+        except Exception as e:
+            log_console("SEND_PHOTO_FAILED", "Failed to send preview", {"error": str(e)})
+            # Пробуем отправить хотя бы текст
             try:
                 await safe_send_text(
                     bot, 
                     chat_id, 
-                    f"❌ Ошибка при генерации изображения.\n"
-                    f"Время ожидания: {int(generation_duration)}s\n"
-                    f"Попробуйте:\n"
-                    f"• Упростить промпт\n"
-                    f"• Использовать меньше референсов\n"
-                    f"• Повторить попытку через минуту"
+                    f"✅ Изображение готово!\n\n{caption}\n\n"
+                    f"⚠️ Не удалось отправить превью, отправляю файл..."
                 )
             except Exception:
                 pass
-            return
-
-        log_console("GENERATION_SUCCESS", "Image generated successfully", {
-            "user_id": telegram_id,
-            "duration_seconds": generation_duration,
-            "image_size_kb": len(generated_bytes)//1024
-        })
-
-        # Сохранить изображение
-        saved_path = image_storage.save_image(telegram_id, generated_bytes, prefix="generated")
-        usage_tracker.increment_usage(telegram_id)
-        remaining = usage_tracker.get_remaining(telegram_id)
-
-        caption = (
-            f"✅ Изображение сгенерировано!\n\n"
-            f"📝 Промпт: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n"
-            f"🖼 Референсов: {len(reference_images_data)}\n"
-            f"⏱ Время: {int(generation_duration)}s\n"
-            f"📊 Осталось: {remaining}/{DAILY_LIMIT}\n\n"
-            f"{settings_text}"
-        )
-
-        # ✅ ОТПРАВКА С SAFE_SEND
-        try:
-            await safe_send_photo(bot, chat_id, saved_path, caption=caption)
-        except Exception as e:
-            log_console("SEND_PHOTO_FAILED", "Failed to send preview photo after all retries", {"error": str(e)})
-            try:
-                await safe_send_text(bot, chat_id, f"✅ Изображение готово, но не могу отправить превью.\n{caption}")
-            except Exception:
-                pass
         
-        # Отправляем оригинал
+        # Отправляем оригинал без сжатия (как документ)
         try:
-            await safe_send_document(bot, chat_id, saved_path, caption="📎 Оригинал без сжатия")
+            await safe_send_document(
+                bot, 
+                chat_id, 
+                saved_path, 
+                caption=f"📎 Оригинал без сжатия ({len(generated_bytes) // 1024} KB)"
+            )
+            log_console("DOCUMENT_SENT", "Original document sent", {"path": str(saved_path)})
         except Exception as e:
             log_console("SEND_DOC_FAILED", "Failed to send original document", {"error": str(e)})
             try:
-                await safe_send_text(bot, chat_id, "⚠️ Не удалось отправить оригинал без сжатия.")
+                await safe_send_text(
+                    bot, 
+                    chat_id, 
+                    f"⚠️ Не удалось отправить оригинал. Файл сохранён: {saved_path.name}"
+                )
             except Exception:
                 pass
 
     except Exception as e:
-        log_console("BG_GENERATE_ERROR", "Unexpected error in background generation", {
+        generation_duration = (datetime.now() - generation_start_time).total_seconds()
+        
+        log_console("BG_GENERATE_CRITICAL", "Critical error in background generation", {
+            "user_id": telegram_id,
             "error": str(e), 
+            "error_type": type(e).__name__,
             "trace": traceback.format_exc(),
-            "duration_seconds": (datetime.now() - generation_start_time).total_seconds()
+            "duration_seconds": round(generation_duration, 1),
         })
+        
         try:
-            await safe_send_text(bot, chat_id, "❌ Внутренняя ошибка при генерации. Попробуйте позже.")
+            await safe_send_text(
+                bot, 
+                chat_id, 
+                f"❌ Критическая ошибка при генерации.\n\n"
+                f"Пожалуйста, попробуйте позже или обратитесь к администратору.\n\n"
+                f"⏱ Время: {int(generation_duration)}s"
+            )
         except Exception:
             pass
+
 
 async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
