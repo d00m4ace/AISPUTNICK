@@ -1,8 +1,7 @@
 ﻿import os
 import json
 import asyncio
-import base64
-import mimetypes
+import random
 
 from pathlib import Path
 from datetime import datetime
@@ -26,11 +25,10 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError, RetryAfter
 
-# Gemini / genai client
 from google import genai
 from google.genai import types
 
-# ========== Настройки (подставь свои) ==========
+# ========== Настройки ==========
 
 TELEGRAM_TOKEN = "7...0"
 GEMINI_API_KEY = "A...g"
@@ -40,15 +38,14 @@ IMAGES_BASE_DIR = "nano_user_images"
 USAGE_FILE = "nano_user_usage.json"
 DAILY_LIMIT = 20
 
-
-# ✅ УВЕЛИЧЕНЫ ТАЙМАУТЫ ДЛЯ ДОЛГИХ ГЕНЕРАЦИЙ
 TELEGRAM_CONNECT_TIMEOUT = 60.0
 TELEGRAM_READ_TIMEOUT = 120.0
 TELEGRAM_WRITE_TIMEOUT = 120.0
 TELEGRAM_POOL_TIMEOUT = 60.0
+GEMINI_GENERATION_TIMEOUT = 600
 
-# ✅ ТАЙМАУТ ДЛЯ GEMINI ГЕНЕРАЦИИ (5 минут + запас)
-GEMINI_GENERATION_TIMEOUT = 600  # 6 минут
+SEED_MIN = 1
+SEED_MAX = 2147483647
 # ===============================================
 
 def log_console(tag: str, message: str, data: Optional[dict] = None):
@@ -60,12 +57,11 @@ def log_console(tag: str, message: str, data: Optional[dict] = None):
             print(f"  {k}: {v}")
     print("=" * 50 + "\n")
 
-# defaults
 DEFAULT_SETTINGS = {
     "temperature": 1.0,
     "aspect_ratio": "16:9",
     "image_size": "1K",
-    "seed": -1  # -1 = случайный (не передаётся в API)
+    "seed": -1
 }
 
 class AIRequestLogger:
@@ -86,7 +82,6 @@ class UserManager:
         self.users = self._load_users_once()
 
     def _load_users_once(self) -> Dict:
-        """Загружает users.json ОДИН раз при старте бота"""
         try:
             with open(self.users_file, 'r', encoding='utf-8') as f:
                 users_data = json.load(f)
@@ -97,7 +92,7 @@ class UserManager:
                 )
                 return users_data
         except FileNotFoundError:
-            log_console("USERS_FILE_NOT_FOUND", f"File {self.users_file} not found, starting with empty users")
+            log_console("USERS_FILE_NOT_FOUND", f"File {self.users_file} not found")
             return {}
         except Exception as e:
             log_console("USERS_LOAD_ERROR", f"Error loading users file", {"error": str(e)})
@@ -189,8 +184,6 @@ class ImageStorage:
 
 
 class GeminiImageGenerator:
-    """Генератор через синхронный API в отдельном потоке"""
-    
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.model = "gemini-3-pro-image-preview"
@@ -204,10 +197,8 @@ class GeminiImageGenerator:
         aspect_ratio: str,
         image_size: str,
         seed: int
-    ) -> Tuple[Optional[bytes], Optional[str]]:
-        """Синхронная генерация в отдельном потоке"""
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
         try:
-            # Синхронный клиент
             client = genai.Client(api_key=self.api_key)
             
             parts = []
@@ -217,24 +208,17 @@ class GeminiImageGenerator:
             
             contents = [types.Content(role="user", parts=parts)]
             
-            # ✅ Базовый конфиг
-            config_params = {
-                "temperature": temperature,
-                "response_modalities": ["IMAGE", "TEXT"],
-                "image_config": types.ImageConfig(
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                response_modalities=["IMAGE", "TEXT"],
+                image_config=types.ImageConfig(
                     aspect_ratio=aspect_ratio,
                     image_size=image_size,
                 ),
-                "tools": [types.Tool(google_search=types.GoogleSearch())],
-            }
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                seed=seed,
+            )
             
-            # ✅ Добавляем seed только если > 0
-            if seed > 0:
-                config_params["seed"] = seed
-            
-            config = types.GenerateContentConfig(**config_params)
-            
-            # Синхронный вызов
             response = client.models.generate_content(
                 model=self.model,
                 contents=contents,
@@ -242,33 +226,33 @@ class GeminiImageGenerator:
             )
             
             if not response.candidates:
-                return None, "NO_CANDIDATES"
+                return None, "NO_CANDIDATES", seed
             
             candidate = response.candidates[0]
             finish_reason = str(getattr(candidate, 'finish_reason', ''))
             
             if "SAFETY" in finish_reason:
-                return None, "SAFETY"
+                return None, "SAFETY", seed
             if "NO_IMAGE" in finish_reason:
-                return None, "NO_IMAGE"
+                return None, "NO_IMAGE", seed
             
             if not candidate.content or not candidate.content.parts:
-                return None, f"NO_CONTENT: {finish_reason}"
+                return None, f"NO_CONTENT: {finish_reason}", seed
             
             for part in candidate.content.parts:
                 if part.inline_data and part.inline_data.data:
-                    return part.inline_data.data, None
+                    return part.inline_data.data, None, seed
                 if hasattr(part, 'text') and part.text:
-                    return None, f"MODEL_RETURNED_TEXT: {part.text[:300]}"
+                    return None, f"MODEL_RETURNED_TEXT: {part.text[:300]}", seed
             
-            return None, "NO_IMAGE_DATA"
+            return None, "NO_IMAGE_DATA", seed
             
         except ValueError as e:
             if "Chunk too big" in str(e):
-                return None, "CHUNK_TOO_BIG"
-            return None, f"ERROR: {str(e)}"
+                return None, "CHUNK_TOO_BIG", seed
+            return None, f"ERROR: {str(e)}", seed
         except Exception as e:
-            return None, f"ERROR: {str(e)}"
+            return None, f"ERROR: {str(e)}", seed
     
     async def generate_image(
         self,
@@ -278,14 +262,15 @@ class GeminiImageGenerator:
         aspect_ratio: str = "16:9",
         image_size: str = "1K",
         seed: int = -1
-    ) -> Tuple[Optional[bytes], Optional[str]]:
-        """Асинхронная обёртка над синхронным вызовом"""
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
+        if seed <= 0:
+            seed = random.randint(SEED_MIN, SEED_MAX)
         
-        log_console("GEMINI_REQUEST", "Starting generation (sync in thread)", {
+        log_console("GEMINI_REQUEST", "Starting generation", {
             "prompt_preview": prompt[:150],
             "num_refs": len(reference_images),
             "image_size": image_size,
-            "seed": seed if seed > 0 else "random",
+            "seed": seed,
         })
         
         loop = asyncio.get_event_loop()
@@ -305,29 +290,31 @@ class GeminiImageGenerator:
                 timeout=GEMINI_GENERATION_TIMEOUT
             )
             
-            image_data, error = result
+            image_data, error, used_seed = result
             if image_data:
                 log_console("GEMINI_SUCCESS", "Image generated", {
-                    "size_kb": len(image_data) // 1024
+                    "size_kb": len(image_data) // 1024,
+                    "seed": used_seed
                 })
             else:
-                log_console("GEMINI_FAILED", "Generation failed", {"error": error})
+                log_console("GEMINI_FAILED", "Generation failed", {"error": error, "seed": used_seed})
             
             return result
             
         except asyncio.TimeoutError:
-            log_console("GEMINI_TIMEOUT", "Generation timeout")
-            return None, "TIMEOUT"
+            log_console("GEMINI_TIMEOUT", "Generation timeout", {"seed": seed})
+            return None, "TIMEOUT", seed
 
-# ✅ Глобальные объекты
+
+# Глобальные объекты
 user_manager = UserManager(USERS_FILE)
 image_storage = ImageStorage(IMAGES_BASE_DIR)
 gemini_generator = GeminiImageGenerator(GEMINI_API_KEY)
 usage_tracker = UsageTracker(USAGE_FILE, DAILY_LIMIT)
 
-# В памяти
 user_settings: Dict[int, Dict] = {}
 user_selected_images: Dict[int, List[Path]] = {}
+
 
 def create_numbered_preview_jpg(img_path: Path, number: int, max_size=(600, 600)) -> str:
     img = Image.open(img_path).convert("RGB")
@@ -352,16 +339,21 @@ def create_numbered_preview_jpg(img_path: Path, number: int, max_size=(600, 600)
     img.save(temp_file.name, "JPEG", quality=85)
     return temp_file.name
 
+
 def get_user_settings(telegram_id: int) -> Dict:
     if telegram_id not in user_settings:
         user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
     return user_settings[telegram_id]
 
-def format_settings_text(settings: Dict) -> str:
-    """Форматирует настройки в читаемый текст"""
+
+def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str:
     temp_emoji = "🔥" if settings['temperature'] > 0.7 else "❄️" if settings['temperature'] < 0.4 else "🌡"
-    seed_value = settings.get('seed', -1)
-    seed_text = "случайный" if seed_value < 0 else str(seed_value)
+    
+    if used_seed is not None:
+        seed_text = str(used_seed)
+    else:
+        seed_value = settings.get('seed', -1)
+        seed_text = "авто" if seed_value <= 0 else str(seed_value)
     
     return (
         f"⚙️ Параметры:\n"
@@ -371,85 +363,49 @@ def format_settings_text(settings: Dict) -> str:
         f"  🎲 Seed: {seed_text}"
     )
 
-# ✅ УЛУЧШЕННАЯ RETRY ЛОГИКА
+
 async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5):
-    """Отправка текста с увеличенным количеством попыток"""
     for attempt in range(retries):
         try:
             return await bot.send_message(chat_id=chat_id, text=text)
-        except TimedOut as e:
+        except TimedOut:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_TEXT_RETRY", f"Timeout, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
-        except NetworkError as e:
+        except NetworkError:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_TEXT_NETWORK", f"Network error, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, "retry_after") else 5
-            log_console("SEND_TEXT_RATE_LIMIT", f"Rate limited, waiting {wait}s", {
-                "attempt": f"{attempt+1}/{retries}"
-            })
             await asyncio.sleep(wait)
         except Exception as e:
-            log_console("SEND_TEXT_ERROR", "Unexpected error", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e),
-                "trace": traceback.format_exc()
-            })
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
-    
     raise RuntimeError(f"Failed to send text after {retries} retries")
 
+
 async def safe_send_photo(bot, chat_id: int, photo_path: Path, caption: Optional[str] = None, retries: int = 5):
-    """Отправка фото с улучшенной retry логикой"""
     for attempt in range(retries):
         try:
             with open(photo_path, "rb") as f:
                 return await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
-        except TimedOut as e:
+        except TimedOut:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_PHOTO_RETRY", f"Timeout, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "file": photo_path.name,
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
-        except NetworkError as e:
+        except NetworkError:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_PHOTO_NETWORK", f"Network error, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, "retry_after") else 5
-            log_console("SEND_PHOTO_RATE_LIMIT", f"Rate limited, waiting {wait}s", {
-                "attempt": f"{attempt+1}/{retries}"
-            })
             await asyncio.sleep(wait)
         except Exception as e:
-            log_console("SEND_PHOTO_ERROR", "Unexpected error", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e),
-                "trace": traceback.format_exc()
-            })
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
-    
     raise RuntimeError(f"Failed to send photo after {retries} retries")
 
+
 async def safe_send_document(bot, chat_id: int, document_path: Path, caption: Optional[str] = None, retries: int = 5):
-    """Отправка документа с улучшенной retry логикой"""
     for attempt in range(retries):
         try:
             with open(document_path, "rb") as f:
@@ -459,38 +415,41 @@ async def safe_send_document(bot, chat_id: int, document_path: Path, caption: Op
                     caption=caption,
                     filename=document_path.name
                 )
-        except TimedOut as e:
+        except TimedOut:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_DOC_RETRY", f"Timeout, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "file": document_path.name,
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
-        except NetworkError as e:
+        except NetworkError:
             wait_time = min(2 ** attempt, 30)
-            log_console("SEND_DOC_NETWORK", f"Network error, retrying in {wait_time}s", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e)
-            })
             await asyncio.sleep(wait_time)
         except RetryAfter as e:
             wait = e.retry_after if hasattr(e, "retry_after") else 5
-            log_console("SEND_DOC_RATE_LIMIT", f"Rate limited, waiting {wait}s", {
-                "attempt": f"{attempt+1}/{retries}"
-            })
             await asyncio.sleep(wait)
         except Exception as e:
-            log_console("SEND_DOC_ERROR", "Unexpected error", {
-                "attempt": f"{attempt+1}/{retries}",
-                "error": str(e),
-                "trace": traceback.format_exc()
-            })
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
-    
     raise RuntimeError(f"Failed to send document after {retries} retries")
+
+
+async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: int = 5):
+    for attempt in range(retries):
+        try:
+            return await bot.send_media_group(chat_id=chat_id, media=media_group)
+        except TimedOut:
+            wait_time = min(2 ** attempt, 30)
+            await asyncio.sleep(wait_time)
+        except NetworkError:
+            wait_time = min(2 ** attempt, 30)
+            await asyncio.sleep(wait_time)
+        except RetryAfter as e:
+            wait = e.retry_after if hasattr(e, "retry_after") else 5
+            await asyncio.sleep(wait)
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(2)
+    raise RuntimeError(f"Failed to send media group after {retries} retries")
+
 
 # -------- Handlers --------
 
@@ -510,6 +469,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/help - помощь"
     )
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔧 Как использовать:\n"
@@ -527,6 +487,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Удачи и творческих успехов! 🎨"
     )
 
+
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     if not user_manager.is_authorized(telegram_id):
@@ -538,8 +499,11 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filled = int((used / DAILY_LIMIT) * bar_length) if DAILY_LIMIT else 0
     bar = "█" * filled + "░" * (bar_length - filled)
     await update.message.reply_text(
-        f"📊 Использовано: {used}/{DAILY_LIMIT}\nОсталось: {remaining}\n[{bar}]"
+        f"📊 Использовано: {used}/{DAILY_LIMIT}\n"
+        f"Осталось: {remaining}\n"
+        f"[{bar}]"
     )
+
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -548,7 +512,7 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     settings = get_user_settings(telegram_id)
     seed_value = settings.get('seed', -1)
-    seed_text = "случайный" if seed_value < 0 else str(seed_value)
+    seed_text = "авто (случайный)" if seed_value <= 0 else str(seed_value)
     
     keyboard = [
         [InlineKeyboardButton("🌡 Температура", callback_data="set_temperature")],
@@ -557,12 +521,15 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
     ]
     await update.message.reply_text(
-        f"Температура: {settings['temperature']}\n"
-        f"Соотношение: {settings['aspect_ratio']}\n"
-        f"Размер: {settings['image_size']}\n"
-        f"Seed: {seed_text}",
+        f"⚙️ Текущие настройки:\n\n"
+        f"🌡 Температура: {settings['temperature']}\n"
+        f"📐 Соотношение: {settings['aspect_ratio']}\n"
+        f"📏 Размер: {settings['image_size']}\n"
+        f"🎲 Seed: {seed_text}\n\n"
+        f"💡 Seed из результата можно скопировать и установить здесь для повтора.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -570,7 +537,6 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     data = query.data
     
-    # Инициализируем настройки если нужно
     if telegram_id not in user_settings:
         user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
     
@@ -584,10 +550,12 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("1.0", callback_data="temp_1.0")],
         ]
         await query.edit_message_text("Выберите температуру:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
     elif data.startswith("temp_"):
         temp = float(data.split("_")[1])
         user_settings[telegram_id]["temperature"] = temp
         await query.edit_message_text(f"✅ Температура: {temp}")
+    
     elif data == "set_aspect_ratio":
         keyboard = [
             [InlineKeyboardButton("1:1", callback_data="ratio_1:1"),
@@ -602,10 +570,12 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
         ]
         await query.edit_message_text("Выберите соотношение:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
     elif data.startswith("ratio_"):
         ratio = data.split("_", 1)[1]
         user_settings[telegram_id]["aspect_ratio"] = ratio
         await query.edit_message_text(f"✅ Соотношение: {ratio}")
+    
     elif data == "set_image_size":
         keyboard = [
             [InlineKeyboardButton("1K", callback_data="size_1K"),
@@ -613,11 +583,14 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("4K", callback_data="size_4K")],
         ]
         await query.edit_message_text("Выберите размер:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
     elif data.startswith("size_"):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
         await query.edit_message_text(f"✅ Размер: {size}")
+    
     elif data == "set_seed":
+        current_seed = user_settings[telegram_id].get("seed", -1)
         keyboard = [
             [InlineKeyboardButton("🎲 Случайный (-1)", callback_data="seed_1")],
             [InlineKeyboardButton("42", callback_data="seed_42"),
@@ -628,18 +601,22 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("12345", callback_data="seed_12345")],
             [InlineKeyboardButton("✏️ Ввести вручную", callback_data="seed_custom")],
         ]
+        current_text = "авто" if current_seed <= 0 else str(current_seed)
         await query.edit_message_text(
             "🎲 Выберите seed:\n\n"
             "• Случайный (-1) - каждый раз разный результат\n"
-            "• Фиксированный - воспроизводимый результат",
+            "• Фиксированный - воспроизводимый результат\n\n"
+            f"💡 Скопируйте seed из результата генерации.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+    
     elif data.startswith("seed_"):
         seed_str = data.split("_", 1)[1]
         if seed_str == "custom":
             context.user_data['awaiting_seed'] = True
             await query.edit_message_text(
-                "✏️ Введите число для seed (целое число > 0):\n"
+                "✏️ Введите seed (целое число):\n\n"
+                "• Положительное число - фиксированный seed\n"
                 "Или введите -1 для случайного seed"
             )
         else:
@@ -647,8 +624,9 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if seed == 1:
                 seed = -1  # случайный            
             user_settings[telegram_id]["seed"] = seed
-            seed_text = "случайный" if seed < 0 else str(seed)
+            seed_text = "случайный" if seed <= 0 else str(seed)
             await query.edit_message_text(f"✅ Seed: {seed_text}")
+
 
 async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -659,46 +637,62 @@ async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not usage_tracker.can_generate(telegram_id):
-        await update.message.reply_text("❌ Вы достигли дневного лимита генераций!")
+        await update.message.reply_text("❌ Вы достигли дневного лимита!")
         return
 
     remaining = usage_tracker.get_remaining(telegram_id)
+    settings = get_user_settings(telegram_id)
     
-    try:
-        await safe_send_text(
-            context.bot, 
-            chat_id,
-            f"🎨 Начинаем генерацию. Осталось: {remaining}/{DAILY_LIMIT}\n"
-            f"⏱ Генерация может занять до 5 минут\n"
-            f"Выберите референсы или пропустите."
-        )
-    except Exception as e:
-        log_console("START_SEND_ERROR", "Failed to send start message", {"error": str(e)})
-        return
+    await update.message.reply_text(
+        f"🎨 Генерация. Осталось: {remaining}/{DAILY_LIMIT}\n\n"
+        f"{format_settings_text(settings)}"
+    )
 
     recent_images = image_storage.get_recent_images(telegram_id, limit=20)
     user_selected_images[telegram_id] = []
 
     if not recent_images:
-        await safe_send_text(context.bot, chat_id, "У вас нет сохранённых изображений. Введите текстовый промпт:")
+        await update.message.reply_text(
+            "У вас нет сохранённых изображений.\n"
+            "Введите текстовый промпт:"
+        )
         context.user_data['awaiting_prompt'] = True
         return
 
+    # Отправляем превью изображений
     batch = recent_images[:min(10, len(recent_images))]
     media_group = []
-    preview_paths = []
+    preview_files = []
+    
     for idx, img in enumerate(batch):
         preview_path = create_numbered_preview_jpg(img, idx + 1)
-        preview_paths.append(preview_path)
-        media_group.append(InputMediaPhoto(open(preview_path, "rb")))
+        preview_files.append(preview_path)
+        f = open(preview_path, "rb")
+        media_group.append(InputMediaPhoto(media=f))
+    
     try:
-        await update.message.reply_media_group(media_group)
+        await safe_send_media_group(context.bot, chat_id, media_group)
     except Exception as e:
         log_console("MEDIA_GROUP_ERROR", "Failed to send media group", {"error": str(e)})
+        await update.message.reply_text("⚠️ Не удалось отправить превью изображений")
+    finally:
+        # Закрываем файлы
+        for media in media_group:
+            try:
+                media.media.close()
+            except:
+                pass
+        # Удаляем временные файлы
+        for path in preview_files:
+            try:
+                os.unlink(path)
+            except:
+                pass
     
+    # Кнопки выбора
     keyboard = []
     row = []
-    for idx, img in enumerate(recent_images[:10]):
+    for idx in range(len(batch)):
         row.append(InlineKeyboardButton(f"📷 {idx+1}", callback_data=f"select_img_{idx}"))
         if len(row) == 5:
             keyboard.append(row)
@@ -709,17 +703,14 @@ async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("✅ Готово", callback_data="images_done")])
     keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_images")])
     
-    await safe_send_text(
-        context.bot,
-        chat_id,
-        "Выберите референсные изображения:",
-    )
     await update.message.reply_text(
-        "Выберите референсные изображения:",
+        "Выберите референсные изображения (нажмите на номер):",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    
     context.user_data['recent_images'] = recent_images
     context.user_data['awaiting_prompt'] = False
+
 
 async def image_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -729,10 +720,12 @@ async def image_selection_callback(update: Update, context: ContextTypes.DEFAULT
     if query.data.startswith("select_img_"):
         img_idx = int(query.data.split("_")[2])
         recent_images = context.user_data.get('recent_images', [])
+        
         if img_idx < len(recent_images):
             selected_img = recent_images[img_idx]
             if telegram_id not in user_selected_images:
                 user_selected_images[telegram_id] = []
+            
             if selected_img in user_selected_images[telegram_id]:
                 user_selected_images[telegram_id].remove(selected_img)
                 await query.answer("❌ Убрано")
@@ -742,11 +735,12 @@ async def image_selection_callback(update: Update, context: ContextTypes.DEFAULT
 
         selected_count = len(user_selected_images.get(telegram_id, []))
         
+        # Обновляем кнопки
         keyboard = []
         row = []
         for idx, img in enumerate(recent_images[:10]):
-            is_selected = "✓" if (idx < len(recent_images) and recent_images[idx] in user_selected_images.get(telegram_id, [])) else ""
-            button_text = f"{is_selected}📷 {idx+1}" if is_selected else f"📷 {idx+1}"
+            is_selected = img in user_selected_images.get(telegram_id, [])
+            button_text = f"✓ {idx+1}" if is_selected else f"📷 {idx+1}"
             row.append(InlineKeyboardButton(button_text, callback_data=f"select_img_{idx}"))
             if len(row) == 5:
                 keyboard.append(row)
@@ -758,14 +752,21 @@ async def image_selection_callback(update: Update, context: ContextTypes.DEFAULT
         keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_images")])
         
         try:
-            await query.edit_message_text(f"Выбрано: {selected_count}", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                f"Выбрано: {selected_count}\nНажмите на номер чтобы выбрать/убрать:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         except Exception:
             pass
 
     elif query.data in ("images_done", "skip_images"):
         selected_count = len(user_selected_images.get(telegram_id, []))
-        await query.edit_message_text(f"Выбрано изображений: {selected_count}\nВведите текстовый промпт:")
+        await query.edit_message_text(
+            f"Выбрано изображений: {selected_count}\n\n"
+            f"Введите текстовый промпт:"
+        )
         context.user_data['awaiting_prompt'] = True
+
 
 async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -776,18 +777,23 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = None
         if update.message.photo:
             file = await update.message.photo[-1].get_file()
-        elif update.message.document and update.message.document.mime_type.startswith("image/"):
+        elif update.message.document and update.message.document.mime_type and update.message.document.mime_type.startswith("image/"):
             file = await update.message.document.get_file()
         else:
             await update.message.reply_text("Это не изображение.")
             return
+        
         photo_bytes = await file.download_as_bytearray()
         saved_path = image_storage.save_image(telegram_id, bytes(photo_bytes), prefix="uploaded")
-        log_console("PHOTO_SAVED", f"Saved for user {telegram_id}", {"path": str(saved_path), "size_kb": len(photo_bytes)//1024})
+        log_console("PHOTO_SAVED", f"Saved for user {telegram_id}", {
+            "path": str(saved_path), 
+            "size_kb": len(photo_bytes)//1024
+        })
         await update.message.reply_text(f"✅ Изображение сохранено: {saved_path.name}")
     except Exception as e:
-        log_console("PHOTO_ERROR", "Error saving uploaded photo", {"error": str(e), "trace": traceback.format_exc()})
-        await update.message.reply_text("❌ Ошибка при сохранении изображения.")
+        log_console("PHOTO_ERROR", "Error saving photo", {"error": str(e)})
+        await update.message.reply_text("❌ Ошибка при сохранении.")
+
 
 async def _background_generate_and_send(
     bot, 
@@ -797,252 +803,166 @@ async def _background_generate_and_send(
     reference_images_paths: List[Path], 
     settings: Dict
 ):
-    """Фоновая задача: генерация изображения и отправка результата"""
     generation_start_time = datetime.now()
     
     try:
         settings_text = format_settings_text(settings)
         
-        # Отправляем сообщение о начале генерации
         try:
             await safe_send_text(
                 bot, 
                 chat_id, 
                 f"🔄 Генерирую изображение...\n\n"
                 f"{settings_text}\n\n"
-                f"⏱ Это может занять 1-5 минут\n"
-                f"💡 Результат появится здесь автоматически"
+                f"⏱ Это может занять 1-5 минут"
             )
         except Exception as e:
             log_console("START_MSG_ERROR", "Failed to send start message", {"error": str(e)})
         
-        # Загружаем референсные изображения
+        # Загружаем референсы
         reference_images_data = []
         for p in reference_images_paths:
             try:
                 with open(p, "rb") as f:
                     img_data = f.read()
                     reference_images_data.append(img_data)
-                    log_console("REF_LOADED", f"Loaded reference", {
-                        "file": p.name, 
-                        "size_kb": len(img_data) // 1024
-                    })
             except Exception as e:
                 log_console("REF_READ_ERROR", f"Failed to read {p}", {"error": str(e)})
 
-        seed_value = settings.get("seed", -1)
+        seed_setting = settings.get("seed", -1)
         
-        # Логируем начало запроса
         AIRequestLogger.log({
             "event": "request_start",
             "user_id": telegram_id,
             "prompt": prompt,
             "num_reference_images": len(reference_images_data),
-            "reference_image_paths": [str(p) for p in reference_images_paths],
             "settings": settings,
         })
 
-        log_console("GENERATION_START", "Calling Gemini API", {
-            "user_id": telegram_id,
-            "prompt_length": len(prompt),
-            "prompt_preview": prompt[:100],
-            "num_refs": len(reference_images_data),
-            "settings": settings,
-            "seed": seed_value if seed_value > 0 else "random",
-        })
-        
-        # ✅ ВЫЗОВ ГЕНЕРАТОРА (возвращает tuple)
-        generated_bytes, error_reason = await gemini_generator.generate_image(
+        # Генерация
+        generated_bytes, error_reason, used_seed = await gemini_generator.generate_image(
             prompt=prompt,
             reference_images=reference_images_data,
             temperature=settings.get("temperature", 1.0),
             aspect_ratio=settings.get("aspect_ratio", "16:9"),
             image_size=settings.get("image_size", "1K"),
-            seed=seed_value,
+            seed=seed_setting,
         )
 
         generation_duration = (datetime.now() - generation_start_time).total_seconds()
         
-        # Логируем результат
         AIRequestLogger.log({
             "event": "request_end",
             "user_id": telegram_id,
             "prompt": prompt,
             "success": generated_bytes is not None,
             "error": error_reason,
-            "settings": settings,
-            "num_reference_images": len(reference_images_data),
+            "used_seed": used_seed,
             "duration_seconds": generation_duration,
-            "image_size_kb": len(generated_bytes) // 1024 if generated_bytes else 0,
         })
 
-        # ✅ ОБРАБОТКА ОШИБОК
+        # Обработка ошибок
         if error_reason or not generated_bytes:
-            log_console("GENERATION_FAILED", "Image generation failed", {
-                "user_id": telegram_id,
-                "duration_seconds": round(generation_duration, 1),
+            log_console("GENERATION_FAILED", "Failed", {
                 "error": error_reason,
+                "seed": used_seed,
+                "duration": round(generation_duration, 1),
             })
             
-            # Словарь понятных сообщений об ошибках
             error_messages = {
                 "NO_IMAGE": (
-                    "❌ Модель не смогла создать изображение для этого промпта.\n\n"
-                    "💡 Советы:\n"
-                    "• Опишите ОДНО конкретное изображение\n"
-                    "• Используйте английский язык\n"
-                    "• Добавьте детали: стиль, цвета, композицию\n"
-                    "• Не просите несколько изображений сразу\n\n"
+                    f"❌ Модель не смогла создать изображение.\n\n"
+                    f"💡 Советы:\n"
+                    f"• Опишите конкретное изображение\n"
+                    f"• Используйте английский язык\n"
+                    f"• Добавьте детали: стиль, цвета\n\n"
+                    f"🎲 Seed: {used_seed}\n"
                     f"⏱ Время: {int(generation_duration)}s"
                 ),
                 "SAFETY": (
-                    "❌ Промпт заблокирован фильтрами безопасности.\n\n"
-                    "Попробуйте переформулировать запрос, избегая:\n"
-                    "• Насилия и жестокости\n"
-                    "• Откровенного контента\n"
-                    "• Оскорбительных тем"
-                ),
-                "RECITATION": (
-                    "❌ Запрос отклонён из-за авторских прав.\n\n"
-                    "Не используйте:\n"
-                    "• Имена брендов и логотипы\n"
-                    "• Известных персонажей (Disney, Marvel и т.д.)\n"
-                    "• Реальных знаменитостей"
+                    f"❌ Промпт заблокирован фильтрами.\n\n"
+                    f"🎲 Seed: {used_seed}"
                 ),
                 "TIMEOUT": (
-                    f"❌ Превышено время ожидания ({int(generation_duration)}s)\n\n"
-                    "💡 Попробуйте:\n"
-                    "• Упростить промпт\n"
-                    "• Уменьшить размер (1K вместо 2K/4K)\n"
-                    "• Повторить попытку позже"
+                    f"❌ Превышено время ожидания.\n\n"
+                    f"💡 Упростите промпт или уменьшите размер.\n\n"
+                    f"🎲 Seed: {used_seed}"
                 ),
-                "NO_CANDIDATES": (
-                    "❌ API не вернул результатов.\n\n"
-                    "Это может быть временная проблема. Попробуйте позже."
-                ),
-                "NO_IMAGE_DATA": (
-                    "❌ Ответ получен, но без изображения.\n\n"
-                    "Попробуйте другой промпт."
-                ),
-                "CHUNK_TOO_BIG": (
-                    "❌ Изображение слишком большое для передачи.\n\n"
-                    "💡 Решение:\n"
-                    "1. Откройте /settings\n"
-                    "2. Измените размер на 1K\n"
-                    "3. Попробуйте снова"
-                ),
+                "NO_CANDIDATES": f"❌ API не вернул результатов.\n\n🎲 Seed: {used_seed}",
+                "NO_IMAGE_DATA": f"❌ Ответ без изображения.\n\n🎲 Seed: {used_seed}",
+                "CHUNK_TOO_BIG": f"❌ Изображение слишком большое. Уменьшите размер в /settings\n\n🎲 Seed: {used_seed}",
             }
             
-            # Определяем сообщение об ошибке
             if error_reason and error_reason.startswith("MODEL_RETURNED_TEXT:"):
                 model_text = error_reason.replace("MODEL_RETURNED_TEXT:", "").strip()
                 error_msg = (
-                    f"❌ Модель не смогла создать изображение и ответила текстом:\n\n"
-                    f"💬 _{model_text[:400]}{'...' if len(model_text) > 400 else ''}_\n\n"
-                    f"💡 Для генерации изображения опишите конкретную картинку, "
-                    f"а не просите придумать идеи.\n\n"
-                    f"⏱ Время: {int(generation_duration)}s"
+                    f"❌ Модель ответила текстом:\n\n"
+                    f"{model_text[:400]}{'...' if len(model_text) > 400 else ''}\n\n"
+                    f"🎲 Seed: {used_seed}"
                 )
             elif error_reason and error_reason.startswith("ERROR:"):
                 error_detail = error_reason.replace("ERROR:", "").strip()
-                error_msg = (
-                    f"❌ Ошибка API: {error_detail[:200]}\n\n"
-                    f"Попробуйте позже или измените промпт."
-                )
+                error_msg = f"❌ Ошибка: {error_detail[:200]}\n\n🎲 Seed: {used_seed}"
             else:
-                error_msg = error_messages.get(
-                    error_reason, 
-                    f"❌ Неизвестная ошибка: {error_reason}\n\nПопробуйте другой промпт."
-                )
+                error_msg = error_messages.get(error_reason, f"❌ Ошибка: {error_reason}\n\n🎲 Seed: {used_seed}")
             
             try:
                 await safe_send_text(bot, chat_id, error_msg)
-            except Exception as e:
-                log_console("ERROR_MSG_SEND_FAILED", "Failed to send error message", {"error": str(e)})
+            except Exception:
+                pass
             
             return
 
-        # ✅ УСПЕШНАЯ ГЕНЕРАЦИЯ
-        log_console("GENERATION_SUCCESS", "Image generated successfully", {
-            "user_id": telegram_id,
-            "duration_seconds": round(generation_duration, 1),
-            "image_size_kb": len(generated_bytes) // 1024,
-            "image_size_mb": f"{len(generated_bytes) / 1024 / 1024:.2f}",
+        # Успех
+        log_console("GENERATION_SUCCESS", "Success", {
+            "seed": used_seed,
+            "size_kb": len(generated_bytes) // 1024,
+            "duration": round(generation_duration, 1),
         })
 
-        # Сохраняем изображение
         saved_path = image_storage.save_image(telegram_id, generated_bytes, prefix="generated")
         
-        # Увеличиваем счётчик использования
         usage_tracker.increment_usage(telegram_id)
         remaining = usage_tracker.get_remaining(telegram_id)
 
-        # Формируем подпись
         caption = (
-            f"✅ Изображение сгенерировано!\n\n"
-            f"📝 Промпт: _{prompt[:80]}{'...' if len(prompt) > 80 else ''}_\n"
+            f"✅ Готово!\n\n"
+            f"📝 Промпт: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n"
             f"🖼 Референсов: {len(reference_images_data)}\n"
             f"⏱ Время: {int(generation_duration)}s\n"
-            f"📊 Осталось сегодня: {remaining}/{DAILY_LIMIT}\n\n"
-            f"{settings_text}"
+            f"📊 Осталось: {remaining}/{DAILY_LIMIT}\n\n"
+            f"{format_settings_text(settings, used_seed=used_seed)}\n\n"
+            f"💡 Для повтора установите seed {used_seed} в /settings"
         )
 
-        # Отправляем превью (сжатое фото)
         try:
             await safe_send_photo(bot, chat_id, saved_path, caption=caption)
-            log_console("PHOTO_SENT", "Preview photo sent", {"path": str(saved_path)})
         except Exception as e:
-            log_console("SEND_PHOTO_FAILED", "Failed to send preview", {"error": str(e)})
+            log_console("SEND_PHOTO_FAILED", "Failed", {"error": str(e)})
             try:
-                await safe_send_text(
-                    bot, 
-                    chat_id, 
-                    f"✅ Изображение готово!\n\n{caption}\n\n"
-                    f"⚠️ Не удалось отправить превью, отправляю файл..."
-                )
-            except Exception:
+                await safe_send_text(bot, chat_id, f"✅ Готово!\n\n🎲 Seed: {used_seed}\n\nОтправляю файл...")
+            except:
                 pass
         
-        # Отправляем оригинал без сжатия (как документ)
         try:
             await safe_send_document(
                 bot, 
                 chat_id, 
                 saved_path, 
-                caption=f"📎 Оригинал без сжатия ({len(generated_bytes) // 1024} KB)"
+                caption=f"📎 Оригинал ({len(generated_bytes) // 1024} KB) | Seed: {used_seed}"
             )
-            log_console("DOCUMENT_SENT", "Original document sent", {"path": str(saved_path)})
         except Exception as e:
-            log_console("SEND_DOC_FAILED", "Failed to send original document", {"error": str(e)})
-            try:
-                await safe_send_text(
-                    bot, 
-                    chat_id, 
-                    f"⚠️ Не удалось отправить оригинал. Файл сохранён: {saved_path.name}"
-                )
-            except Exception:
-                pass
+            log_console("SEND_DOC_FAILED", "Failed", {"error": str(e)})
 
     except Exception as e:
         generation_duration = (datetime.now() - generation_start_time).total_seconds()
-        
-        log_console("BG_GENERATE_CRITICAL", "Critical error in background generation", {
-            "user_id": telegram_id,
+        log_console("BG_GENERATE_CRITICAL", "Critical error", {
             "error": str(e), 
-            "error_type": type(e).__name__,
             "trace": traceback.format_exc(),
-            "duration_seconds": round(generation_duration, 1),
         })
-        
         try:
-            await safe_send_text(
-                bot, 
-                chat_id, 
-                f"❌ Критическая ошибка при генерации.\n\n"
-                f"Пожалуйста, попробуйте позже или обратитесь к администратору.\n\n"
-                f"⏱ Время: {int(generation_duration)}s"
-            )
-        except Exception:
+            await safe_send_text(bot, chat_id, f"❌ Критическая ошибка. Попробуйте позже.")
+        except:
             pass
 
 
@@ -1050,17 +970,17 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     telegram_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    # ✅ Обработка ввода seed
+    # Ввод seed
     if context.user_data.get('awaiting_seed', False):
         try:
             seed = int(update.message.text.strip())
             if telegram_id not in user_settings:
                 user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
             user_settings[telegram_id]["seed"] = seed
-            seed_text = "случайный" if seed < 0 else str(seed)
-            await update.message.reply_text(f"✅ Seed установлен: {seed_text}")
+            seed_text = "авто (случайный)" if seed <= 0 else str(seed)
+            await update.message.reply_text(f"✅ Seed: {seed_text}")
         except ValueError:
-            await update.message.reply_text("❌ Введите целое число (например: 42, 12345, или -1 для случайного)")
+            await update.message.reply_text("❌ Введите целое число (например: 1234567890 или -1 для авто)")
         context.user_data['awaiting_seed'] = False
         return
     
@@ -1073,44 +993,37 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if not usage_tracker.can_generate(telegram_id):
-        await update.message.reply_text("❌ Вы достигли дневного лимита генераций!")
+        await update.message.reply_text("❌ Лимит исчерпан!")
         context.user_data['awaiting_prompt'] = False
         if telegram_id in user_selected_images:
             del user_selected_images[telegram_id]
         return
 
-    try:
-        await safe_send_text(
-            context.bot,
-            chat_id,
-            "⏳ Принял промпт — запускаю генерацию.\n"
-            "⏱ Генерация может занять до 5 минут\n"
-            "💡 Я пришлю результат сюда, как только он будет готов."
-        )
-    except Exception as e:
-        log_console("PROMPT_ACK_ERROR", "Failed to acknowledge prompt", {"error": str(e)})
+    await update.message.reply_text(
+        "⏳ Принял промпт, запускаю генерацию.\n"
+        "⏱ Может занять до 5 минут."
+    )
     
-    log_console("PROMPT_RECEIVED", f"User {telegram_id} submitted prompt", {
-        "prompt": prompt[:200] + ('...' if len(prompt) > 200 else ''),
-        "prompt_length": len(prompt)
+    log_console("PROMPT_RECEIVED", f"User {telegram_id}", {
+        "prompt": prompt[:200],
     })
 
     selected_images = user_selected_images.get(telegram_id, [])
-    reference_images_paths = [p for p in selected_images]
-
     settings = get_user_settings(telegram_id)
 
     AIRequestLogger.log({
         "event": "request_queued",
         "user_id": telegram_id,
         "prompt": prompt,
-        "num_reference_images": len(reference_images_paths),
+        "num_reference_images": len(selected_images),
         "settings": settings,
     })
 
-    # ✅ ЗАПУСК ФОНОВОЙ ЗАДАЧИ
     asyncio.create_task(
-        _background_generate_and_send(context.bot, chat_id, telegram_id, prompt, reference_images_paths, settings)
+        _background_generate_and_send(
+            context.bot, chat_id, telegram_id, prompt, 
+            list(selected_images), settings
+        )
     )
 
     if telegram_id in user_selected_images:
@@ -1119,11 +1032,12 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if 'recent_images' in context.user_data:
         del context.user_data['recent_images']
 
+
 async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     user = user_manager.get_user(telegram_id)
     if not user or not user.get('admin', False):
-        await update.message.reply_text("❌ У вас нет прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("Использование: /reset_usage <telegram_id>")
@@ -1131,39 +1045,31 @@ async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_user_id = int(context.args[0])
         usage_tracker.reset_usage(target_user_id)
-        await update.message.reply_text(f"✅ Лимиты пользователя {target_user_id} сброшены.")
+        await update.message.reply_text(f"✅ Лимиты {target_user_id} сброшены.")
     except ValueError:
         await update.message.reply_text("Неверный ID.")
+
 
 async def global_error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
     error_msg = str(context.error)
     
     if "terminated by other getUpdates" in error_msg:
-        log_console("BOT_CONFLICT", "⚠️ ВНИМАНИЕ: Обнаружен конфликт - запущено несколько копий бота!", {
-            "error": error_msg,
-            "action": "Остановите все запущенные копии бота и запустите только одну"
-        })
+        log_console("BOT_CONFLICT", "Запущено несколько копий бота!")
         return
     
-    log_console("GLOBAL_ERROR", "Exception in handler", {
+    log_console("GLOBAL_ERROR", "Exception", {
         "error": error_msg, 
         "trace": traceback.format_exc()
     })
     
     try:
         if update and update.effective_chat:
-            await safe_send_text(
-                context.bot, 
-                update.effective_chat.id, 
-                "⚠️ Произошла ошибка. Администратор уведомлён."
-            )
-    except Exception as e:
-        log_console("ERROR_HANDLER_FAILED", "Failed to send error message to user", {"error": str(e)})
+            await safe_send_text(context.bot, update.effective_chat.id, "⚠️ Ошибка.")
+    except:
+        pass
+
 
 def main():
-    """
-    Точка входа - создаёт и запускает бота
-    """
     request = HTTPXRequest(
         connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
         read_timeout=TELEGRAM_READ_TIMEOUT,
@@ -1186,44 +1092,32 @@ def main():
     application.add_handler(CommandHandler("generate", generate_start))
 
     application.add_handler(
-        CallbackQueryHandler(
-            settings_callback, 
-            pattern="^(set_|temp_|ratio_|size_|seed_)"
-        )
+        CallbackQueryHandler(settings_callback, pattern="^(set_|temp_|ratio_|size_|seed_)")
     )
     application.add_handler(
-        CallbackQueryHandler(
-            image_selection_callback, 
-            pattern="^(select_img_|images_done|skip_images)"
-        )
+        CallbackQueryHandler(image_selection_callback, pattern="^(select_img_|images_done|skip_images)")
     )
 
     application.add_handler(MessageHandler(filters.PHOTO, process_photo))
     application.add_handler(MessageHandler(filters.Document.IMAGE, process_photo))
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            process_text_message
-        )
-    )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_message))
 
     application.add_error_handler(global_error_handler)
 
     print("=" * 60)
     print("🤖 Gemini Image Generator Bot")
     print("=" * 60)
-    print(f"📊 Дневной лимит генераций: {DAILY_LIMIT}")
-    print(f"👥 Авторизованных пользователей: {len(user_manager.users)}")
-    print(f"⏱ Таймаут генерации: {GEMINI_GENERATION_TIMEOUT}s ({GEMINI_GENERATION_TIMEOUT//60} мин)")
-    print(f"🌐 Telegram таймауты: connect={TELEGRAM_CONNECT_TIMEOUT}s, read={TELEGRAM_READ_TIMEOUT}s")
-    print("=" * 60)
-    print("⚠️  ВАЖНО: Убедитесь что запущена только ОДНА копия бота!")
+    print(f"📊 Лимит: {DAILY_LIMIT}/день")
+    print(f"👥 Пользователей: {len(user_manager.users)}")
+    print(f"⏱ Таймаут: {GEMINI_GENERATION_TIMEOUT}s")
+    print(f"🎲 Seed: {SEED_MIN} - {SEED_MAX}")
     print("=" * 60)
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
+
 
 if __name__ == "__main__":
     main()
