@@ -8,11 +8,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-# ✅ КРИТИЧЕСКИ ВАЖНО: Патч aiohttp ДО импорта genai
-import aiohttp.streams
-aiohttp.streams.DEFAULT_LIMIT = 100 * 1024 * 1024  # 100MB для 4K изображений
-print(f"✅ aiohttp patched: chunk limit = {aiohttp.streams.DEFAULT_LIMIT / 1024 / 1024:.0f}MB")
-
 import concurrent.futures
 
 from PIL import Image, ImageDraw, ImageFont
@@ -39,16 +34,18 @@ from google.genai import types
 
 TELEGRAM_TOKEN = "7...0"
 GEMINI_API_KEY = "A...g"
+
 USERS_FILE = "sputnkik_bot_users/users.json"
 IMAGES_BASE_DIR = "nano_user_images"
 USAGE_FILE = "nano_user_usage.json"
 DAILY_LIMIT = 20
 
+
 # ✅ УВЕЛИЧЕНЫ ТАЙМАУТЫ ДЛЯ ДОЛГИХ ГЕНЕРАЦИЙ
-TELEGRAM_CONNECT_TIMEOUT = 60.0  # Было 20
-TELEGRAM_READ_TIMEOUT = 120.0    # Было 20
-TELEGRAM_WRITE_TIMEOUT = 120.0   # Было 20
-TELEGRAM_POOL_TIMEOUT = 60.0     # Было 20
+TELEGRAM_CONNECT_TIMEOUT = 60.0
+TELEGRAM_READ_TIMEOUT = 120.0
+TELEGRAM_WRITE_TIMEOUT = 120.0
+TELEGRAM_POOL_TIMEOUT = 60.0
 
 # ✅ ТАЙМАУТ ДЛЯ GEMINI ГЕНЕРАЦИИ (5 минут + запас)
 GEMINI_GENERATION_TIMEOUT = 600  # 6 минут
@@ -67,7 +64,8 @@ def log_console(tag: str, message: str, data: Optional[dict] = None):
 DEFAULT_SETTINGS = {
     "temperature": 1.0,
     "aspect_ratio": "16:9",
-    "image_size": "1K"
+    "image_size": "1K",
+    "seed": -1  # -1 = случайный (не передаётся в API)
 }
 
 class AIRequestLogger:
@@ -204,11 +202,12 @@ class GeminiImageGenerator:
         reference_images: List[bytes],
         temperature: float,
         aspect_ratio: str,
-        image_size: str
+        image_size: str,
+        seed: int
     ) -> Tuple[Optional[bytes], Optional[str]]:
         """Синхронная генерация в отдельном потоке"""
         try:
-            # ✅ СИНХРОННЫЙ КЛИЕНТ
+            # Синхронный клиент
             client = genai.Client(api_key=self.api_key)
             
             parts = []
@@ -218,18 +217,24 @@ class GeminiImageGenerator:
             
             contents = [types.Content(role="user", parts=parts)]
             
-            config = types.GenerateContentConfig(
-                temperature=temperature,
-                response_modalities=["IMAGE", "TEXT"],
-                image_config=types.ImageConfig(
+            # ✅ Базовый конфиг
+            config_params = {
+                "temperature": temperature,
+                "response_modalities": ["IMAGE", "TEXT"],
+                "image_config": types.ImageConfig(
                     aspect_ratio=aspect_ratio,
                     image_size=image_size,
                 ),
-                # ✅ Можно добавить tools если нужен поиск
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            )
+                "tools": [types.Tool(google_search=types.GoogleSearch())],
+            }
             
-            # ✅ СИНХРОННЫЙ ВЫЗОВ (не aio)
+            # ✅ Добавляем seed только если > 0
+            if seed > 0:
+                config_params["seed"] = seed
+            
+            config = types.GenerateContentConfig(**config_params)
+            
+            # Синхронный вызов
             response = client.models.generate_content(
                 model=self.model,
                 contents=contents,
@@ -271,7 +276,8 @@ class GeminiImageGenerator:
         reference_images: List[bytes],
         temperature: float = 1.0,
         aspect_ratio: str = "16:9",
-        image_size: str = "1K"
+        image_size: str = "1K",
+        seed: int = -1
     ) -> Tuple[Optional[bytes], Optional[str]]:
         """Асинхронная обёртка над синхронным вызовом"""
         
@@ -279,6 +285,7 @@ class GeminiImageGenerator:
             "prompt_preview": prompt[:150],
             "num_refs": len(reference_images),
             "image_size": image_size,
+            "seed": seed if seed > 0 else "random",
         })
         
         loop = asyncio.get_event_loop()
@@ -292,7 +299,8 @@ class GeminiImageGenerator:
                     reference_images,
                     temperature,
                     aspect_ratio,
-                    image_size
+                    image_size,
+                    seed
                 ),
                 timeout=GEMINI_GENERATION_TIMEOUT
             )
@@ -352,12 +360,15 @@ def get_user_settings(telegram_id: int) -> Dict:
 def format_settings_text(settings: Dict) -> str:
     """Форматирует настройки в читаемый текст"""
     temp_emoji = "🔥" if settings['temperature'] > 0.7 else "❄️" if settings['temperature'] < 0.4 else "🌡"
+    seed_value = settings.get('seed', -1)
+    seed_text = "случайный" if seed_value < 0 else str(seed_value)
     
     return (
         f"⚙️ Параметры:\n"
         f"  {temp_emoji} Температура: {settings['temperature']}\n"
         f"  📐 Соотношение: {settings['aspect_ratio']}\n"
-        f"  📏 Размер: {settings['image_size']}"
+        f"  📏 Размер: {settings['image_size']}\n"
+        f"  🎲 Seed: {seed_text}"
     )
 
 # ✅ УЛУЧШЕННАЯ RETRY ЛОГИКА
@@ -367,7 +378,7 @@ async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5):
         try:
             return await bot.send_message(chat_id=chat_id, text=text)
         except TimedOut as e:
-            wait_time = min(2 ** attempt, 30)  # Exponential backoff, max 30s
+            wait_time = min(2 ** attempt, 30)
             log_console("SEND_TEXT_RETRY", f"Timeout, retrying in {wait_time}s", {
                 "attempt": f"{attempt+1}/{retries}",
                 "error": str(e)
@@ -510,6 +521,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Введите промпт\n"
         "4. Подождите (до 5 мин)\n"
         "5. Получите результат\n\n"
+        "🎲 Seed: используйте /settings чтобы задать фиксированный seed для воспроизводимых результатов.\n"
         "Используйте /settings для настройки параметров генерации.\n"
         "Используйте /usage для проверки оставшихся лимитов.\n"
         "Удачи и творческих успехов! 🎨"
@@ -535,15 +547,20 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
     settings = get_user_settings(telegram_id)
+    seed_value = settings.get('seed', -1)
+    seed_text = "случайный" if seed_value < 0 else str(seed_value)
+    
     keyboard = [
         [InlineKeyboardButton("🌡 Температура", callback_data="set_temperature")],
         [InlineKeyboardButton("📐 Соотношение сторон", callback_data="set_aspect_ratio")],
         [InlineKeyboardButton("📏 Размер", callback_data="set_image_size")],
+        [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
     ]
     await update.message.reply_text(
         f"Температура: {settings['temperature']}\n"
         f"Соотношение: {settings['aspect_ratio']}\n"
-        f"Размер: {settings['image_size']}",
+        f"Размер: {settings['image_size']}\n"
+        f"Seed: {seed_text}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -552,6 +569,11 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     telegram_id = update.effective_user.id
     data = query.data
+    
+    # Инициализируем настройки если нужно
+    if telegram_id not in user_settings:
+        user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
+    
     if data == "set_temperature":
         keyboard = [
             [InlineKeyboardButton("0.0", callback_data="temp_0.0"),
@@ -573,8 +595,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("2:3", callback_data="ratio_2:3")],
             [InlineKeyboardButton("4:3", callback_data="ratio_4:3"),
              InlineKeyboardButton("3:4", callback_data="ratio_3:4")],
-            [InlineKeyboardButton("4:3", callback_data="ratio_5:4"),
-             InlineKeyboardButton("3:4", callback_data="ratio_4:5")],
+            [InlineKeyboardButton("5:4", callback_data="ratio_5:4"),
+             InlineKeyboardButton("4:5", callback_data="ratio_4:5")],
             [InlineKeyboardButton("16:9", callback_data="ratio_16:9"),
              InlineKeyboardButton("9:16", callback_data="ratio_9:16")],
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
@@ -595,6 +617,38 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
         await query.edit_message_text(f"✅ Размер: {size}")
+    elif data == "set_seed":
+        keyboard = [
+            [InlineKeyboardButton("🎲 Случайный (-1)", callback_data="seed_1")],
+            [InlineKeyboardButton("42", callback_data="seed_42"),
+             InlineKeyboardButton("128", callback_data="seed_128"),
+             InlineKeyboardButton("777", callback_data="seed_777")],
+            [InlineKeyboardButton("1024", callback_data="seed_1024"),
+             InlineKeyboardButton("2048", callback_data="seed_2048"),
+             InlineKeyboardButton("12345", callback_data="seed_12345")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data="seed_custom")],
+        ]
+        await query.edit_message_text(
+            "🎲 Выберите seed:\n\n"
+            "• Случайный (-1) - каждый раз разный результат\n"
+            "• Фиксированный - воспроизводимый результат",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif data.startswith("seed_"):
+        seed_str = data.split("_", 1)[1]
+        if seed_str == "custom":
+            context.user_data['awaiting_seed'] = True
+            await query.edit_message_text(
+                "✏️ Введите число для seed (целое число > 0):\n"
+                "Или введите -1 для случайного seed"
+            )
+        else:
+            seed = int(seed_str)
+            if seed == 1:
+                seed = -1  # случайный            
+            user_settings[telegram_id]["seed"] = seed
+            seed_text = "случайный" if seed < 0 else str(seed)
+            await query.edit_message_text(f"✅ Seed: {seed_text}")
 
 async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -610,7 +664,6 @@ async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     remaining = usage_tracker.get_remaining(telegram_id)
     
-    # ✅ ИСПОЛЬЗУЕМ SAFE_SEND
     try:
         await safe_send_text(
             context.bot, 
@@ -777,6 +830,8 @@ async def _background_generate_and_send(
             except Exception as e:
                 log_console("REF_READ_ERROR", f"Failed to read {p}", {"error": str(e)})
 
+        seed_value = settings.get("seed", -1)
+        
         # Логируем начало запроса
         AIRequestLogger.log({
             "event": "request_start",
@@ -793,6 +848,7 @@ async def _background_generate_and_send(
             "prompt_preview": prompt[:100],
             "num_refs": len(reference_images_data),
             "settings": settings,
+            "seed": seed_value if seed_value > 0 else "random",
         })
         
         # ✅ ВЫЗОВ ГЕНЕРАТОРА (возвращает tuple)
@@ -802,6 +858,7 @@ async def _background_generate_and_send(
             temperature=settings.get("temperature", 1.0),
             aspect_ratio=settings.get("aspect_ratio", "16:9"),
             image_size=settings.get("image_size", "1K"),
+            seed=seed_value,
         )
 
         generation_duration = (datetime.now() - generation_start_time).total_seconds()
@@ -878,7 +935,6 @@ async def _background_generate_and_send(
             
             # Определяем сообщение об ошибке
             if error_reason and error_reason.startswith("MODEL_RETURNED_TEXT:"):
-                # Модель вернула текст вместо изображения
                 model_text = error_reason.replace("MODEL_RETURNED_TEXT:", "").strip()
                 error_msg = (
                     f"❌ Модель не смогла создать изображение и ответила текстом:\n\n"
@@ -888,14 +944,12 @@ async def _background_generate_and_send(
                     f"⏱ Время: {int(generation_duration)}s"
                 )
             elif error_reason and error_reason.startswith("ERROR:"):
-                # Общая ошибка API
                 error_detail = error_reason.replace("ERROR:", "").strip()
                 error_msg = (
                     f"❌ Ошибка API: {error_detail[:200]}\n\n"
                     f"Попробуйте позже или измените промпт."
                 )
             else:
-                # Известная ошибка из словаря
                 error_msg = error_messages.get(
                     error_reason, 
                     f"❌ Неизвестная ошибка: {error_reason}\n\nПопробуйте другой промпт."
@@ -939,7 +993,6 @@ async def _background_generate_and_send(
             log_console("PHOTO_SENT", "Preview photo sent", {"path": str(saved_path)})
         except Exception as e:
             log_console("SEND_PHOTO_FAILED", "Failed to send preview", {"error": str(e)})
-            # Пробуем отправить хотя бы текст
             try:
                 await safe_send_text(
                     bot, 
@@ -996,6 +1049,21 @@ async def _background_generate_and_send(
 async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     chat_id = update.effective_chat.id
+    
+    # ✅ Обработка ввода seed
+    if context.user_data.get('awaiting_seed', False):
+        try:
+            seed = int(update.message.text.strip())
+            if telegram_id not in user_settings:
+                user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
+            user_settings[telegram_id]["seed"] = seed
+            seed_text = "случайный" if seed < 0 else str(seed)
+            await update.message.reply_text(f"✅ Seed установлен: {seed_text}")
+        except ValueError:
+            await update.message.reply_text("❌ Введите целое число (например: 42, 12345, или -1 для случайного)")
+        context.user_data['awaiting_seed'] = False
+        return
+    
     if not context.user_data.get('awaiting_prompt', False):
         return
 
@@ -1070,7 +1138,6 @@ async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def global_error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
     error_msg = str(context.error)
     
-    # ✅ ИГНОРИРУЕМ "terminated by other getUpdates" - это значит запущено 2 бота
     if "terminated by other getUpdates" in error_msg:
         log_console("BOT_CONFLICT", "⚠️ ВНИМАНИЕ: Обнаружен конфликт - запущено несколько копий бота!", {
             "error": error_msg,
@@ -1097,7 +1164,6 @@ def main():
     """
     Точка входа - создаёт и запускает бота
     """
-    # ✅ УВЕЛИЧЕННЫЕ ТАЙМАУТЫ
     request = HTTPXRequest(
         connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
         read_timeout=TELEGRAM_READ_TIMEOUT,
@@ -1122,7 +1188,7 @@ def main():
     application.add_handler(
         CallbackQueryHandler(
             settings_callback, 
-            pattern="^(set_|temp_|ratio_|size_)"
+            pattern="^(set_|temp_|ratio_|size_|seed_)"
         )
     )
     application.add_handler(
