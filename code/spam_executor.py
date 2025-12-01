@@ -280,15 +280,25 @@ class SpamExecutor:
         current_time = datetime.now()
         spam_data["last_check"] = current_time.isoformat()
 
+        # Счётчик для периодических рассылок
+        periodic_broadcast_index = 0
+
         for broadcast in broadcasts:
             if broadcast.get("status") in ["deleted", "completed"]:
                 continue
+
+            # Определяем индекс для периодических рассылок
+            if broadcast.get("type") == "periodic":
+                hour_offset = periodic_broadcast_index
+                periodic_broadcast_index += 1
+            else:
+                hour_offset = 0
 
             try:
                 if broadcast.get("type") == "once":
                     # --- ОДНОРАЗОВАЯ РАССЫЛКА ---
                     scheduled_time = datetime.fromisoformat(broadcast.get("scheduled_datetime"))
-                
+            
                     if current_time >= scheduled_time and broadcast.get("status") == "scheduled":
                         # Проверяем, не попадает ли на нерабочий день
                         if not is_working_day(scheduled_time):
@@ -296,23 +306,23 @@ class SpamExecutor:
                             working_day = get_working_day_in_same_month(scheduled_time)
                             holiday_name = get_holiday_name(scheduled_time)
                             reason = f"праздник: {holiday_name}" if holiday_name else "выходной"
-                            
-                            direction = "вперёд" if working_day > scheduled_time else "назад"
                         
+                            direction = "вперёд" if working_day > scheduled_time else "назад"
+                    
                             self.spam_logger.info(
                                 f"⚠️ Рассылка {broadcast.get('id')}: дата {scheduled_time.strftime('%d.%m.%Y')} "
                                 f"({reason}) перенесена {direction} на {working_day.strftime('%d.%m.%Y %H:%M')} "
                                 f"(остаёмся в месяце {scheduled_time.strftime('%B %Y')})"
                             )
-                        
+                    
                             # Обновляем время отправки
                             broadcast["scheduled_datetime"] = working_day.isoformat()
                             self._save_spam_data(spam_data)
-                        
+                    
                             # Если новое время ещё не наступило, пропускаем
                             if current_time < working_day:
                                 continue
-                    
+                
                         # Выполняем рассылку
                         await self._execute_broadcast(broadcast, spam_data)
                         broadcast["status"] = "completed"
@@ -324,36 +334,36 @@ class SpamExecutor:
                     if not next_send_str:
                         logger.warning(f"Рассылка {broadcast.get('id')} не имеет next_send_time")
                         continue
-                
+            
                     next_send_time = datetime.fromisoformat(next_send_str)
-                
+            
                     # Если время отправки ещё не наступило, пропускаем
                     if current_time < next_send_time:
                         continue
-                
+            
                     # Проверяем, не попадает ли на нерабочий день
                     if not is_working_day(next_send_time):
                         # Переносим на рабочий день в том же месяце
                         working_day = get_working_day_in_same_month(next_send_time)
                         holiday_name = get_holiday_name(next_send_time)
                         reason = f"праздник: {holiday_name}" if holiday_name else "выходной"
-                        
-                        direction = "вперёд" if working_day > next_send_time else "назад"
                     
+                        direction = "вперёд" if working_day > next_send_time else "назад"
+                
                         self.spam_logger.info(
                             f"⚠️ Рассылка {broadcast.get('id')}: дата {next_send_time.strftime('%d.%m.%Y')} "
                             f"({reason}) перенесена {direction} на {working_day.strftime('%d.%m.%Y %H:%M')} "
                             f"(остаёмся в месяце {next_send_time.strftime('%B %Y')})"
                         )
-                    
+                
                         # Обновляем время отправки
                         broadcast["next_send_time"] = working_day.isoformat()
                         self._save_spam_data(spam_data)
-                    
+                
                         # Если новое время ещё не наступило, пропускаем
                         if current_time < working_day:
                             continue
-                
+            
                     # Выполняем рассылку
                     await self._execute_broadcast(broadcast, spam_data)
 
@@ -365,7 +375,7 @@ class SpamExecutor:
                         from calendar import monthrange
 
                         monthly_day = broadcast.get("monthly_day", 1)
-                    
+                
                         # Вычисляем следующий месяц
                         year = current_time.year
                         month = current_time.month + 1
@@ -376,20 +386,21 @@ class SpamExecutor:
                         # Корректируем день месяца (если в месяце нет такого дня)
                         max_day = monthrange(year, month)[1]
                         day = min(monthly_day, max_day)
-                    
-                        # Создаём дату следующей отправки (10:00 по умолчанию)
-                        next_date = datetime(year, month, day, 10, 0, 0)
+                
+                        # Создаём дату следующей отправки с учетом индекса (10:00 + N часов)
+                        base_hour = 10 + hour_offset
+                        next_date = datetime(year, month, day, base_hour, 0, 0)
 
                         # ВАЖНО: Если дата попадает на нерабочий день, переносим в пределах месяца
                         if not is_working_day(next_date):
                             original_date = next_date.strftime('%d.%m.%Y')
                             next_date = get_working_day_in_same_month(next_date)
-                        
+                    
                             holiday_name = get_holiday_name(datetime(year, month, day))
                             reason = f"праздник: {holiday_name}" if holiday_name else "выходной"
-                            
-                            direction = "вперёд" if next_date.day > day else "назад"
                         
+                            direction = "вперёд" if next_date.day > day else "назад"
+                    
                             logger.info(
                                 f"📆 Рассылка {broadcast.get('id')}: дата {original_date} ({reason}) "
                                 f"автоматически перенесена {direction} на {next_date.strftime('%d.%m.%Y')} "
@@ -407,21 +418,21 @@ class SpamExecutor:
                             period_seconds = 86400  # 24 часа по умолчанию
 
                         next_time = current_time + timedelta(seconds=period_seconds)
-                    
+                
                         # Для интервальных рассылок тоже учитываем рабочие дни
                         if not is_working_day(next_time):
                             original_date = next_time.strftime('%d.%m.%Y %H:%M')
                             original_month = next_time.month
                             next_time = get_working_day_in_same_month(next_time)
-                            
-                            direction = "вперёд" if next_time > datetime.fromisoformat(original_date.replace('.', '-')) else "назад"
                         
+                            direction = "вперёд" if next_time > datetime.fromisoformat(original_date.replace('.', '-')) else "назад"
+                    
                             logger.info(
                                 f"📆 Рассылка {broadcast.get('id')}: время {original_date} "
                                 f"перенесено {direction} на {next_time.strftime('%d.%m.%Y %H:%M')} "
                                 f"(рабочий день в том же месяце)"
                             )
-                    
+                
                         broadcast["next_send_time"] = next_time.isoformat()
 
                     broadcast["last_sent"] = current_time.isoformat()
@@ -541,48 +552,58 @@ class SpamExecutor:
     def get_broadcasts_schedule(self, months: int = 2) -> str:
         """
         Получение расписания рассылок на указанное количество месяцев вперёд
-        
+    
         Args:
             months: количество месяцев для прогноза (по умолчанию 2)
-        
+    
         Returns:
             Форматированное расписание рассылок
         """
         from calendar import monthrange
-        
+    
         spam_data = self._load_spam_data()
         broadcasts = spam_data.get("broadcasts", [])
         current_time = datetime.now()
         end_date = current_time + timedelta(days=30 * months)
-        
+    
         schedule = []
-        
+    
+        # Счётчик для периодических рассылок
+        periodic_broadcast_index = 0
+    
         for broadcast in broadcasts:
             if broadcast.get("status") in ["deleted"]:
                 continue
-                
+        
+            # Определяем индекс для периодических рассылок
+            if broadcast.get("type") == "periodic":
+                hour_offset = periodic_broadcast_index
+                periodic_broadcast_index += 1
+            else:
+                hour_offset = 0
+            
             broadcast_id = broadcast.get("id", "unknown")
             message_preview = broadcast.get("message_text", "")[:50]
             groups = ", ".join(broadcast.get("groups", []))
-            
+        
             if broadcast.get("type") == "once":
                 # Одноразовая рассылка
                 scheduled_time = datetime.fromisoformat(broadcast.get("scheduled_datetime"))
-                
+            
                 if broadcast.get("status") == "completed":
                     continue  # Пропускаем уже выполненные
-                
+            
                 if scheduled_time > end_date:
                     continue  # За пределами периода
-                
+            
                 # Проверяем, не попадает ли на нерабочий день
                 if not is_working_day(scheduled_time):
                     working_day = get_working_day_in_same_month(scheduled_time)
                     holiday_name = get_holiday_name(scheduled_time)
                     reason = f"{holiday_name}" if holiday_name else "выходной"
-                    
+                
                     direction = "➡️" if working_day > scheduled_time else "⬅️"
-                    
+                
                     schedule.append({
                         "date": working_day,
                         "id": broadcast_id,
@@ -600,43 +621,45 @@ class SpamExecutor:
                         "groups": groups,
                         "note": ""
                     })
-            
+        
             elif broadcast.get("type") == "periodic":
                 # Периодическая рассылка
                 period_type = broadcast.get("period_type")
                 next_send_str = broadcast.get("next_send_time")
-                
+            
                 if not next_send_str:
                     continue
-                
+            
                 next_send_time = datetime.fromisoformat(next_send_str)
-                
+            
                 if period_type == "monthly":
                     # Ежемесячная рассылка
                     monthly_day = broadcast.get("monthly_day", 1)
-                    
+                
                     # Генерируем даты на все месяцы периода
                     temp_date = next_send_time if next_send_time >= current_time else current_time
-                    
+                
                     while temp_date <= end_date:
                         year = temp_date.year
                         month = temp_date.month
-                        
+                    
                         # Корректируем день месяца
                         max_day = monthrange(year, month)[1]
                         day = min(monthly_day, max_day)
-                        
-                        send_date = datetime(year, month, day, 10, 0, 0)
-                        
+                    
+                        # Используем базовый час + смещение для каждой рассылки
+                        base_hour = 10 + hour_offset
+                        send_date = datetime(year, month, day, base_hour, 0, 0)
+                    
                         if send_date >= current_time and send_date <= end_date:
                             # Проверяем рабочий день
                             if not is_working_day(send_date):
                                 working_day = get_working_day_in_same_month(send_date)
                                 holiday_name = get_holiday_name(send_date)
                                 reason = f"{holiday_name}" if holiday_name else "выходной"
-                                
+                            
                                 direction = "➡️" if working_day > send_date else "⬅️"
-                                
+                            
                                 schedule.append({
                                     "date": working_day,
                                     "id": broadcast_id,
@@ -654,14 +677,14 @@ class SpamExecutor:
                                     "groups": groups,
                                     "note": ""
                                 })
-                        
+                    
                         # Переходим к следующему месяцу
                         month += 1
                         if month > 12:
                             month = 1
                             year += 1
                         temp_date = datetime(year, month, 1)
-                
+            
                 else:
                     # Интервальная рассылка
                     period_seconds = broadcast.get("period_seconds")
@@ -669,9 +692,9 @@ class SpamExecutor:
                         period_seconds = broadcast.get("period_hours") * 3600
                     if not period_seconds:
                         period_seconds = 86400
-                    
+                
                     temp_date = next_send_time if next_send_time >= current_time else current_time
-                    
+                
                     while temp_date <= end_date:
                         if temp_date >= current_time:
                             # Проверяем рабочий день
@@ -679,9 +702,9 @@ class SpamExecutor:
                                 working_day = get_working_day_in_same_month(temp_date)
                                 holiday_name = get_holiday_name(temp_date)
                                 reason = f"{holiday_name}" if holiday_name else "выходной"
-                                
+                            
                                 direction = "➡️" if working_day > temp_date else "⬅️"
-                                
+                            
                                 schedule.append({
                                     "date": working_day,
                                     "id": broadcast_id,
@@ -699,39 +722,39 @@ class SpamExecutor:
                                     "groups": groups,
                                     "note": ""
                                 })
-                        
+                    
                         temp_date += timedelta(seconds=period_seconds)
-        
+    
         # Сортируем по дате
         schedule.sort(key=lambda x: x["date"])
-        
+    
         # Форматируем вывод
         if not schedule:
             return "📭 Нет запланированных рассылок на ближайшие 2 месяца"
-        
+    
         result = f"📅 **Расписание рассылок на {months} месяца**\n"
         result += f"(с {current_time.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')})\n\n"
-        
+    
         current_month = None
-        
+    
         for item in schedule:
             # Группировка по месяцам
             month_name = item["date"].strftime("%B %Y")
             if month_name != current_month:
                 result += f"\n━━━ {month_name.upper()} ━━━\n\n"
                 current_month = month_name
-            
+        
             # Формируем строку с информацией о рассылке
             date_str = item["date"].strftime("%d.%m (%a) %H:%M")
             result += f"🕐 **{date_str}** - ID:{item['id']} [{item['type']}]\n"
             result += f"   📝 {item['message']}...\n"
             result += f"   👥 Группы: {item['groups']}\n"
-            
+        
             if item["note"]:
                 result += f"   ⚠️ {item['note']}\n"
-            
+        
             result += "\n"
-        
+    
         result += f"\n📊 Всего запланировано: {len(schedule)} рассылок"
-        
+    
         return result
