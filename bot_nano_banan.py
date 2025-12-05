@@ -31,12 +31,15 @@ from google.genai import types
 # ========== Настройки ==========
 
 TELEGRAM_TOKEN = "7...0"
-GEMINI_API_KEY = "A...g"
+GEMINI_API_KEY = "A...M" 
 
 USERS_FILE = "sputnkik_bot_users/users.json"
 IMAGES_BASE_DIR = "nano_user_images"
 USAGE_FILE = "nano_user_usage.json"
 DAILY_LIMIT = 20
+
+DAILY_LIMIT_PREMIUM = 50
+PREMIUM_USERS = ['123456789','1234567890','12345678901']
 
 TELEGRAM_CONNECT_TIMEOUT = 60.0
 TELEGRAM_READ_TIMEOUT = 120.0
@@ -105,10 +108,16 @@ class UserManager:
         return self.users.get(str(telegram_id))
 
 class UsageTracker:
-    def __init__(self, usage_file: str, daily_limit: int):
+    def __init__(self, usage_file: str, daily_limit: int, premium_limit: int, premium_users: List[str]):
         self.usage_file = usage_file
         self.daily_limit = daily_limit
+        self.premium_limit = premium_limit
+        self.premium_users = premium_users
         self.usage_data = self.load_usage()
+
+    def get_user_limit(self, telegram_id: int) -> int:
+        """Возвращает лимит для пользователя (премиум или обычный)"""
+        return self.premium_limit if str(telegram_id) in self.premium_users else self.daily_limit    
 
     def load_usage(self) -> Dict:
         try:
@@ -135,10 +144,12 @@ class UsageTracker:
         return user_usage.get('count', 0)
 
     def can_generate(self, telegram_id: int) -> bool:
-        return self.get_usage_count(telegram_id) < self.daily_limit
+        user_limit = self.get_user_limit(telegram_id)
+        return self.get_usage_count(telegram_id) < user_limit
 
     def get_remaining(self, telegram_id: int) -> int:
-        return max(0, self.daily_limit - self.get_usage_count(telegram_id))
+        user_limit = self.get_user_limit(telegram_id)
+        return max(0, user_limit - self.get_usage_count(telegram_id))
 
     def increment_usage(self, telegram_id: int):
         user_id = str(telegram_id)
@@ -310,7 +321,7 @@ class GeminiImageGenerator:
 user_manager = UserManager(USERS_FILE)
 image_storage = ImageStorage(IMAGES_BASE_DIR)
 gemini_generator = GeminiImageGenerator(GEMINI_API_KEY)
-usage_tracker = UsageTracker(USAGE_FILE, DAILY_LIMIT)
+usage_tracker = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
 
 user_settings: Dict[int, Dict] = {}
 user_selected_images: Dict[int, List[Path]] = {}
@@ -460,9 +471,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user = user_manager.get_user(telegram_id)
     remaining = usage_tracker.get_remaining(telegram_id)
+    user_limit = usage_tracker.get_user_limit(telegram_id)
+    premium_badge = "⭐" if str(telegram_id) in PREMIUM_USERS else ""
+    
     await update.message.reply_text(
-        f"👋 Привет, {user.get('name', 'пользователь')}!\n\n"
-        f"📊 Доступно генераций сегодня: {remaining}/{DAILY_LIMIT}\n\n"
+        f"👋 Привет, {user.get('name', 'пользователь')}! {premium_badge}\n\n"
+        f"📊 Доступно генераций сегодня: {remaining}/{user_limit}\n\n"
         f"/generate - начать генерацию\n"
         f"/settings - настройки\n"
         f"/usage - лимиты\n"
@@ -494,12 +508,16 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
     used = usage_tracker.get_usage_count(telegram_id)
+    user_limit = usage_tracker.get_user_limit(telegram_id)
     remaining = usage_tracker.get_remaining(telegram_id)
+    premium_badge = "⭐ Premium" if str(telegram_id) in PREMIUM_USERS else ""
+    
     bar_length = 10
-    filled = int((used / DAILY_LIMIT) * bar_length) if DAILY_LIMIT else 0
+    filled = int((used / user_limit) * bar_length) if user_limit else 0
     bar = "█" * filled + "░" * (bar_length - filled)
+    
     await update.message.reply_text(
-        f"📊 Использовано: {used}/{DAILY_LIMIT}\n"
+        f"📊 Использовано: {used}/{user_limit} {premium_badge}\n"
         f"Осталось: {remaining}\n"
         f"[{bar}]"
     )
@@ -641,10 +659,11 @@ async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     remaining = usage_tracker.get_remaining(telegram_id)
+    user_limit = usage_tracker.get_user_limit(telegram_id)
     settings = get_user_settings(telegram_id)
     
     await update.message.reply_text(
-        f"🎨 Генерация. Осталось: {remaining}/{DAILY_LIMIT}\n\n"
+        f"🎨 Генерация. Осталось: {remaining}/{user_limit}\n\n"
         f"{format_settings_text(settings)}"
     )
 
@@ -923,14 +942,16 @@ async def _background_generate_and_send(
         saved_path = image_storage.save_image(telegram_id, generated_bytes, prefix="generated")
         
         usage_tracker.increment_usage(telegram_id)
+
         remaining = usage_tracker.get_remaining(telegram_id)
+        user_limit = usage_tracker.get_user_limit(telegram_id)
 
         caption = (
             f"✅ Готово!\n\n"
             f"📝 Промпт: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n"
             f"🖼 Референсов: {len(reference_images_data)}\n"
             f"⏱ Время: {int(generation_duration)}s\n"
-            f"📊 Осталось: {remaining}/{DAILY_LIMIT}\n\n"
+            f"📊 Осталось: {remaining}/{user_limit}\n\n"
             f"{format_settings_text(settings, used_seed=used_seed)}\n\n"
             f"💡 Для повтора установите seed {used_seed} в /settings"
         )
@@ -1107,8 +1128,10 @@ def main():
     print("=" * 60)
     print("🤖 Gemini Image Generator Bot")
     print("=" * 60)
-    print(f"📊 Лимит: {DAILY_LIMIT}/день")
+    print(f"📊 Лимит: {DAILY_LIMIT}/день (обычный)")
+    print(f"⭐ Лимит Premium: {DAILY_LIMIT_PREMIUM}/день")
     print(f"👥 Пользователей: {len(user_manager.users)}")
+    print(f"💎 Premium: {len(PREMIUM_USERS)}")
     print(f"⏱ Таймаут: {GEMINI_GENERATION_TIMEOUT}s")
     print(f"🎲 Seed: {SEED_MIN} - {SEED_MAX}")
     print("=" * 60)
