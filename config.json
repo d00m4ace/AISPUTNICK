@@ -21,12 +21,12 @@
 
   "ai_models": {
     "openai": {
-      "default_model": "gpt-5",
+      "default_model": "gpt-5.1",
       "_max_tokens": 4096,
       "_temperature": 1.0
     },
     "anthropic": {
-      "default_model": "claude-sonnet-4-20250514",
+      "default_model": "claude-sonnet-4-5-20250929",
       "_max_tokens": 2048,
       "_temperature": 1.0
     }
@@ -39,6 +39,15 @@
       "api_url": "https://api.openai.com/v1/chat/completions",
       "documentation": "https://platform.openai.com/docs/",
       "models": {
+        "gpt-5.1": {
+          "name": "GPT-5.1",
+          "description": "Флагманская модель OpenAI с улучшенным рассуждением, кодом и агентными задачами",
+          "max_context": 400000,
+          "category": "premium",
+          "_comment": "Параметры max_tokens, temperature и др. теперь управляются агентами",
+          "_reasoning_effort": "medium",
+          "_verbosity": "medium"
+        },		  
         "gpt-5": {
           "name": "GPT-5",
           "description": "Флагманская модель OpenAI с улучшенным рассуждением, кодом и агентными задачами",
@@ -124,6 +133,16 @@
       "api_url": "https://api.anthropic.com/v1/messages",
       "documentation": "https://docs.anthropic.com/",
       "models": {
+        "claude-sonnet-4-5-20250929": {
+          "name": "Claude Sonnet 4.5",
+          "description": "Сбалансированная модель Claude 4.5 поколения",
+          "max_context": 200000,
+          "category": "standard",
+          "_max_tokens": 4096,
+          "_temperature": 1.0,
+          "_top_p": 0.99,
+          "_top_k": 40
+        },		  
         "claude-sonnet-4-20250514": {
           "name": "Claude Sonnet 4",
           "description": "Сбалансированная модель Claude 4 поколения",
