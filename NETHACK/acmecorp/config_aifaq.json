@@ -8,11 +8,11 @@
   "rem_reasoning_effort": "minimal, low, medium, high",
   "rem_verbosity": "low, medium, high",
   
-  "selection_model": "gpt-5.1",
+  "selection_model": "gpt-5.2",
   "select_reasoning_effort": "low",
   "select_verbosity": "low",
 
-  "answer_model": "gpt-5.1",
+  "answer_model": "gpt-5.2",
   "answer_reasoning_effort": "low",
   "answer_verbosity": "medium",
   
@@ -20,6 +20,7 @@
   "cache_ttl_seconds": 300,  
   
 	"model_contexts": {
+    "gpt-5.2": 256000,		
     "gpt-5.1": 256000,
     "gpt-5": 256000,
     "gpt-5-mini": 128000,
@@ -41,6 +42,7 @@
   },
   
 	"model_temperature_fixed": {
+	"gpt-5.2": 1.0,	
 	"gpt-5.1": 1.0,
 	"gpt-5": 1.0,
     "gpt-5-mini": 1.0,
