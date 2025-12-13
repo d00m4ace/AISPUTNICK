@@ -21,12 +21,11 @@
 
   "ai_models": {
     "openai": {
-      "default_model": "gpt-5",
-      "_max_tokens": 4096,
-      "_temperature": 1.0
+      "default_model": "gpt-5.2",
+      "_comment": "max_tokens и temperature теперь задаются только на уровне агентов"
     },
     "anthropic": {
-      "default_model": "claude-sonnet-4-20250514",
+      "default_model": "claude-sonnet-4-5-20250929",
       "_max_tokens": 2048,
       "_temperature": 1.0
     }
@@ -39,38 +38,46 @@
       "api_url": "https://api.openai.com/v1/chat/completions",
       "documentation": "https://platform.openai.com/docs/",
       "models": {
-        "gpt-5": {
-          "name": "GPT-5",
-          "description": "Флагманская модель OpenAI с улучшенным рассуждением, кодом и агентными задачами",
+        "gpt-5.2": {
+          "name": "GPT-5.2",
+          "description": "Флагманская модель GPT-5.2 с улучшенным рассуждением, кодом и агентными задачами",
           "max_context": 400000,
           "category": "premium",
-          "_max_tokens": 16384,
-          "_temperature": 1.0,
-          "_top_p": 1.0,
-          "_frequency_penalty": 0,
-          "_presence_penalty": 0,
+          "_comment": "Параметры max_tokens, temperature и др. теперь управляются агентами",
+          "_reasoning_effort": "medium",
+          "_verbosity": "medium"
+        },		  		  
+        "gpt-5.1": {
+          "name": "GPT-5.1",
+          "description": "Флагманская модель GPT-5.1 с улучшенным рассуждением, кодом и агентными задачами",
+          "max_context": 400000,
+          "category": "premium",
+          "_comment": "Параметры max_tokens, temperature и др. теперь управляются агентами",
+          "_reasoning_effort": "medium",
+          "_verbosity": "medium"
+        },		  
+        "gpt-5": {
+          "name": "GPT-5",
+          "description": "Флагманская модель GPT-5 с улучшенным рассуждением, кодом и агентными задачами",
+          "max_context": 400000,
+          "category": "premium",
+          "_comment": "Параметры max_tokens, temperature и др. теперь управляются агентами",
           "_reasoning_effort": "medium",
           "_verbosity": "medium"
         },
         "gpt-5-mini": {
           "name": "GPT-5 Mini",
-          "description": "Более быстрая и экономичная версия GPT-5",
+          "description": "Более быстрая и экономичная версия GPT-5 Mini",
           "max_context": 400000,
           "category": "standard",
-          "_max_tokens": 16384,
-          "_temperature": 1.0,
-          "_top_p": 1.0,
           "_reasoning_effort": "medium",
           "_verbosity": "medium"
         },
         "gpt-5-nano": {
           "name": "GPT-5 Nano",
-          "description": "Компактная версия GPT-5 для низкой задержки",
+          "description": "Компактная версия GPT-5 Nano для низкой задержки",
           "max_context": 400000,
           "category": "fast",
-          "_max_tokens": 8192,
-          "_temperature": 1.0,
-          "_top_p": 1.0,
           "_reasoning_effort": "low",
           "_verbosity": "low"
         },
@@ -79,7 +86,6 @@
           "description": "Чат-ориентированный вариант GPT-5, соответствующий текущему снапшоту ChatGPT",
           "max_context": 400000,
           "category": "chat",
-          "_temperature": 1.0,
           "_verbosity": "medium"
         },
 
@@ -87,25 +93,19 @@
           "name": "GPT-4o",
           "description": "Универсальная мультимодальная модель",
           "max_context": 128000,
-          "category": "premium",
-          "_max_tokens": 4096,
-          "_temperature": 1.0
+          "category": "premium"
         },
         "gpt-4.1": {
           "name": "GPT-4.1",
           "description": "Улучшенный GPT-4, хороший баланс скорости и качества",
           "max_context": 128000,
-          "category": "premium",
-          "_max_tokens": 4096,
-          "_temperature": 1.0
+          "category": "premium"
         },
         "o4-mini": {
           "name": "OpenAI o4-mini",
-          "description": "Быстрый reasoning‑ориентированный мини‑модель",
+          "description": "Быстрый reasoning-ориентированный мини-модель",
           "max_context": 128000,
-          "category": "reasoning-fast",
-          "_max_tokens": 8192,
-          "_temperature": 1.0
+          "category": "reasoning-fast"
         },
         "gpt-3.5-turbo": {
           "name": "GPT-3.5 Turbo",
@@ -118,15 +118,36 @@
       }
     },
 
+
     "anthropic": {
       "name": "Anthropic",
       "description": "Конституционные ИИ модели Claude от Anthropic",
       "api_url": "https://api.anthropic.com/v1/messages",
       "documentation": "https://docs.anthropic.com/",
       "models": {
+        "claude-opus-4-5-20251101": {
+          "name": "Claude Opus 4.5",
+          "description": "Сбалансированная модель Claude Opus 4.5 поколения",
+          "max_context": 200000,
+          "category": "standard",
+          "_max_tokens": 4096,
+          "_temperature": 1.0,
+          "_top_p": 0.99,
+          "_top_k": 40
+        },		  
+        "claude-sonnet-4-5-20250929": {
+          "name": "Claude Sonnet 4.5",
+          "description": "Сбалансированная модель Claude Sonnet 4.5 поколения",
+          "max_context": 200000,
+          "category": "standard",
+          "_max_tokens": 4096,
+          "_temperature": 1.0,
+          "_top_p": 0.99,
+          "_top_k": 40
+        },
         "claude-sonnet-4-20250514": {
           "name": "Claude Sonnet 4",
-          "description": "Сбалансированная модель Claude 4 поколения",
+          "description": "Сбалансированная модель Claude Sonnet 4 поколения",
           "max_context": 200000,
           "category": "standard",
           "_max_tokens": 4096,
@@ -136,7 +157,7 @@
         },
         "claude-opus-4-20250514": {
           "name": "Claude Opus 4",
-          "description": "Флагман Claude 4 для сложного рассуждения и кода",
+          "description": "Флагман Claude Opus 4 для сложного рассуждения и кода",
           "max_context": 200000,
           "category": "premium",
           "_max_tokens": 8192,
@@ -146,7 +167,7 @@
         },
         "claude-opus-4-1-20250805": {
           "name": "Claude Opus 4.1",
-          "description": "Самая мощная на текущий момент модель Anthropic",
+          "description": "Самая мощная на текущий момент модель Claude Opus 4.1",
           "max_context": 200000,
           "category": "premium",
           "_max_tokens": 8192,
@@ -154,19 +175,17 @@
           "_top_p": 0.99,
           "_top_k": 40
         },
-
         "claude-3-7-sonnet-20250219": {
           "name": "Claude 3.7 Sonnet",
-          "description": "Гибридное рассуждение (ранняя ветка перед Claude 4)",
+          "description": "Модель Claude 3.7 Sonnet",
           "max_context": 200000,
           "category": "legacy",
           "_max_tokens": 64000,
           "_temperature": 1.0
         },
-
         "claude-3-5-haiku-20241022": {
           "name": "Claude 3.5 Haiku",
-          "description": "Быстрая и экономичная",
+          "description": "Быстрая и экономичная Claude 3.5 Haiku",
           "max_context": 200000,
           "category": "fast",
           "_max_tokens": 4096,
@@ -183,7 +202,6 @@
     ".yaml", ".toml", ".ini", ".cfg", ".json", ".xml", ".html",
     ".css", ".sh", ".bat", ".ps1", ".pl", ".lua", ".csv"
   ],
-  
   "supported_archive_formats": [
     ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".tar.gz"
   ],
@@ -192,7 +210,7 @@
   "max_total_codebase_size": 1048576000,
   
   "log_level": "INFO",
-  "log_file": "test_ai_bot.log",
+  "log_file": "sputnkik_bot.log",
   
 	"agent_logging": {
     "main_log": true,       
@@ -206,6 +224,6 @@
   
   "// Логирование AI запросов": "Полные запросы и ответы от AI провайдеров",
   "ai_log_enabled": true,
-  "ai_log_file": "ai_requests_full.log"    
-    
+  "ai_log_file": "sputnkik_bot_ai_requests_full.log"  
+  
 }

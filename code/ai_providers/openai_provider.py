@@ -23,7 +23,7 @@ class OpenAIProvider(BaseAIProvider):
     
     # Модели GPT-5 которые используют max_completion_tokens
     GPT5_MODELS = [
-        "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat-latest",
+        "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-chat-latest",
         "o4", "o4-mini", "o4-2025-01-01"
     ]
     
@@ -44,6 +44,8 @@ class OpenAIProvider(BaseAIProvider):
     # Таймауты для разных моделей (в секундах)
     MODEL_TIMEOUTS = {
         # GPT-5 модели - увеличенный таймаут
+        "gpt-5.2": 600,  # 10 минут для сложных запросов        
+        "gpt-5.1": 600,  # 10 минут для сложных запросов
         "gpt-5": 600,  # 10 минут для сложных запросов
         "gpt-5-mini": 300,  # 5 минут
         "gpt-5-nano": 180,  # 3 минуты
