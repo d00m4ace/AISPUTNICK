@@ -2,6 +2,8 @@
 import json
 import asyncio
 import random
+import uuid
+import re
 
 from pathlib import Path
 from datetime import datetime
@@ -29,7 +31,6 @@ from google import genai
 from google.genai import types
 
 # ========== Настройки ==========
-
 TELEGRAM_TOKEN = "7...0"
 GEMINI_API_KEY = "A...M" 
 
@@ -116,7 +117,6 @@ class UsageTracker:
         self.usage_data = self.load_usage()
 
     def get_user_limit(self, telegram_id: int) -> int:
-        """Возвращает лимит для пользователя (премиум или обычный)"""
         return self.premium_limit if str(telegram_id) in self.premium_users else self.daily_limit    
 
     def load_usage(self) -> Dict:
@@ -192,7 +192,6 @@ class ImageStorage:
         user_dir = self.get_user_dir(telegram_id)
         images = sorted(user_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
         return images[:limit]
-
 
 class GeminiImageGenerator:
     def __init__(self, api_key: str):
@@ -278,7 +277,7 @@ class GeminiImageGenerator:
             seed = random.randint(SEED_MIN, SEED_MAX)
         
         log_console("GEMINI_REQUEST", "Starting generation", {
-            "prompt_preview": prompt[:150],
+            "prompt_preview": prompt[:3500],
             "num_refs": len(reference_images),
             "image_size": image_size,
             "seed": seed,
@@ -324,8 +323,72 @@ gemini_generator = GeminiImageGenerator(GEMINI_API_KEY)
 usage_tracker = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
 
 user_settings: Dict[int, Dict] = {}
-user_selected_images: Dict[int, List[Path]] = {}
+user_sessions: Dict[int, Dict] = {}
 
+def get_user_settings(telegram_id: int) -> Dict:
+    if telegram_id not in user_settings:
+        user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
+    return user_settings[telegram_id]
+
+def get_user_session(telegram_id: int) -> Dict:
+    """Получает или создает сессию пользователя с промптом и референсами"""
+    if telegram_id not in user_sessions:
+        user_sessions[telegram_id] = {
+            "prompt": "",
+            "refs": [],
+            "awaiting": None
+        }
+    return user_sessions[telegram_id]
+
+def generate_config_id() -> str:
+    """Генерирует уникальный ID для конфигурации"""
+    return str(uuid.uuid4()).replace('-', '_')[:16]
+
+def save_generation_config(telegram_id: int, config_id: str, prompt: str, settings: Dict, refs: List[Path]):
+    """Сохраняет конфигурацию генерации в JSON файл пользователя"""
+    user_dir = image_storage.get_user_dir(telegram_id)
+    config_path = user_dir / f"set_{config_id}.json"
+    
+    rel_refs = []
+    for ref in refs:
+        try:
+            rel_path = str(ref.relative_to(user_dir))
+            rel_refs.append(rel_path)
+        except ValueError:
+            rel_refs.append(str(ref))
+    
+    config_data = {
+        "id": config_id,
+        "timestamp": datetime.now().isoformat(),
+        "prompt": prompt,
+        "settings": settings.copy(),
+        "references": rel_refs
+    }
+    
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config_data, f, indent=2, ensure_ascii=False)
+    
+    log_console("CONFIG_SAVED", f"Saved config {config_id}", {"path": str(config_path)})
+
+def load_generation_config(telegram_id: int, config_id: str) -> Optional[Dict]:
+    """Загружает конфигурацию по ID"""
+    user_dir = image_storage.get_user_dir(telegram_id)
+    config_path = user_dir / f"set_{config_id}.json"
+    
+    if not config_path.exists():
+        return None
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    valid_refs = []
+    for ref_path in data.get("references", []):
+        full_path = user_dir / ref_path
+        if full_path.exists():
+            valid_refs.append(full_path)
+    
+    data["references"] = valid_refs
+    return data
 
 def create_numbered_preview_jpg(img_path: Path, number: int, max_size=(600, 600)) -> str:
     img = Image.open(img_path).convert("RGB")
@@ -350,12 +413,21 @@ def create_numbered_preview_jpg(img_path: Path, number: int, max_size=(600, 600)
     img.save(temp_file.name, "JPEG", quality=85)
     return temp_file.name
 
-
-def get_user_settings(telegram_id: int) -> Dict:
-    if telegram_id not in user_settings:
-        user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
-    return user_settings[telegram_id]
-
+def get_main_menu_keyboard():
+    """Возвращает клавиатуру главного меню с кликабельными командами"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📝 Промпт", callback_data="cmd_prompt"),
+            InlineKeyboardButton("🖼 Референсы", callback_data="cmd_refs")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Настройки", callback_data="cmd_settings"),
+            InlineKeyboardButton("📊 Статус", callback_data="cmd_status")
+        ],
+        [
+            InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")
+        ]
+    ])
 
 def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str:
     temp_emoji = "🔥" if settings['temperature'] > 0.7 else "❄️" if settings['temperature'] < 0.4 else "🌡"
@@ -374,11 +446,12 @@ def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str
         f"  🎲 Seed: {seed_text}"
     )
 
+# -------- Утилиты отправки сообщений --------
 
-async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5):
+async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5, parse_mode: str = 'Markdown', reply_markup=None):
     for attempt in range(retries):
         try:
-            return await bot.send_message(chat_id=chat_id, text=text)
+            return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
         except TimedOut:
             wait_time = min(2 ** attempt, 30)
             await asyncio.sleep(wait_time)
@@ -394,12 +467,11 @@ async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5):
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send text after {retries} retries")
 
-
 async def safe_send_photo(bot, chat_id: int, photo_path: Path, caption: Optional[str] = None, retries: int = 5):
     for attempt in range(retries):
         try:
             with open(photo_path, "rb") as f:
-                return await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
+                return await bot.send_photo(chat_id=chat_id, photo=f, caption=caption, parse_mode='Markdown')
         except TimedOut:
             wait_time = min(2 ** attempt, 30)
             await asyncio.sleep(wait_time)
@@ -414,7 +486,6 @@ async def safe_send_photo(bot, chat_id: int, photo_path: Path, caption: Optional
                 raise
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send photo after {retries} retries")
-
 
 async def safe_send_document(bot, chat_id: int, document_path: Path, caption: Optional[str] = None, retries: int = 5):
     for attempt in range(retries):
@@ -441,7 +512,6 @@ async def safe_send_document(bot, chat_id: int, document_path: Path, caption: Op
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send document after {retries} retries")
 
-
 async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: int = 5):
     for attempt in range(retries):
         try:
@@ -461,7 +531,6 @@ async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: i
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send media group after {retries} retries")
 
-
 # -------- Handlers --------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -474,33 +543,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_limit = usage_tracker.get_user_limit(telegram_id)
     premium_badge = "⭐" if str(telegram_id) in PREMIUM_USERS else ""
     
-    await update.message.reply_text(
+    welcome_text = (
         f"👋 Привет, {user.get('name', 'пользователь')}! {premium_badge}\n\n"
-        f"📊 Доступно генераций сегодня: {remaining}/{user_limit}\n\n"
-        f"/generate - начать генерацию\n"
-        f"/settings - настройки\n"
-        f"/usage - лимиты\n"
-        f"/help - помощь"
+        f"📊 Доступно генераций сегодня: `{remaining}/{user_limit}`\n\n"
+        f"*Быстрые команды:*\n"
+        f"📝 /prompt — задать описание\n"
+        f"🖼 /refs — выбрать референсы\n"
+        f"⚙️ /settings — настроить параметры\n"
+        f"📊 /status — проверить конфигурацию\n"
+        f"▶️ /gen — сгенерировать изображение\n"
+        f"💾 `/set_<id>` — повторить сохраненную генерацию\n\n"
+        f"ℹ️ /help — подробная помощь"
     )
-
+    
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode='Markdown',
+        reply_markup=get_main_menu_keyboard()
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔧 Как использовать:\n"
-        "Этот бот позволяет генерировать изображения с помощью модели Gemini 3 Pro Image (Nano Banana Pro)\n\n"
-        "⏱ Генерация может занять до 5 минут - это нормально для сложных изображений!\n\n"
-        "Загрузи свои изображения для использования в качестве референсов, а затем используй команду /generate для создания новых изображений на основе текстового промпта и выбранных референсов.\n\n"
-        "1. /generate - начать\n"
-        "2. Выберите референсы или пропустите\n"
-        "3. Введите промпт\n"
-        "4. Подождите (до 5 мин)\n"
-        "5. Получите результат\n\n"
-        "🎲 Seed: используйте /settings чтобы задать фиксированный seed для воспроизводимых результатов.\n"
-        "Используйте /settings для настройки параметров генерации.\n"
-        "Используйте /usage для проверки оставшихся лимитов.\n"
-        "Удачи и творческих успехов! 🎨"
+    help_text = (
+        "🔧 *Как использовать бота:*\n\n"
+        "1️⃣ *Загрузка изображений:*\n"
+        "Просто отправьте фото в чат, они сохранятся для использования как референсы.\n\n"
+        "2️⃣ *Установка промпта:*\n"
+        "Нажмите кнопку ниже или используйте /prompt ваше описание\n\n"
+        "3️⃣ *Выбор референсов:*\n"
+        "Нажмите 🖼 *Референсы* или используйте /refs\n\n"
+        "4️⃣ *Параметры генерации:*\n"
+        "Нажмите ⚙️ *Параметры* или используйте /settings\n"
+        "— Температура, соотношение сторон, размер, seed\n\n"
+        "5️⃣ *Проверка конфигурации:*\n"
+        "Нажмите 📊 *Статус* или используйте /status\n\n"
+        "6️⃣ *Генерация:*\n"
+        "Нажмите ▶️ *Сгенерировать* или используйте /gen\n\n"
+        "💾 *Сохранение конфигураций:*\n"
+        "После каждой генерации бот выдает ID конфигурации.\n"
+        "Нажмите на `/set_<id>` в сообщении для быстрой загрузки всех настроек.\n\n"
+        "⚡ *Быстрый старт:*\n"
+        "/prompt → /refs → /gen"
     )
-
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+        [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("⚙️ Открыть настройки", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+    ])
+    
+    await update.message.reply_text(help_text, parse_mode='Markdown', reply_markup=keyboard)
 
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -517,11 +609,11 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bar = "█" * filled + "░" * (bar_length - filled)
     
     await update.message.reply_text(
-        f"📊 Использовано: {used}/{user_limit} {premium_badge}\n"
-        f"Осталось: {remaining}\n"
-        f"[{bar}]"
+        f"📊 Использовано: `{used}/{user_limit}` {premium_badge}\n"
+        f"Осталось: `{remaining}`\n"
+        f"`[{bar}]`",
+        parse_mode='Markdown'
     )
-
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -537,17 +629,18 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📐 Соотношение сторон", callback_data="set_aspect_ratio")],
         [InlineKeyboardButton("📏 Размер", callback_data="set_image_size")],
         [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
     ]
     await update.message.reply_text(
-        f"⚙️ Текущие настройки:\n\n"
-        f"🌡 Температура: {settings['temperature']}\n"
-        f"📐 Соотношение: {settings['aspect_ratio']}\n"
-        f"📏 Размер: {settings['image_size']}\n"
-        f"🎲 Seed: {seed_text}\n\n"
-        f"💡 Seed из результата можно скопировать и установить здесь для повтора.",
+        f"⚙️ *Текущие настройки:*\n\n"
+        f"🌡 Температура: `{settings['temperature']}`\n"
+        f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
+        f"📏 Размер: `{settings['image_size']}`\n"
+        f"🎲 Seed: `{seed_text}`\n\n"
+        f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
+        parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -555,6 +648,51 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     data = query.data
     
+    # Обработка навигационных команд из кнопок
+    if data == "cmd_prompt":
+        await query.edit_message_text("📝 Введите промпт:", parse_mode='Markdown')
+        session = get_user_session(telegram_id)
+        session["awaiting"] = "prompt"
+        return
+    elif data == "cmd_refs":
+        await select_refs_command(update, context)
+        return
+    elif data == "cmd_settings":
+        # Симулируем вызов settings_menu
+        settings = get_user_settings(telegram_id)
+        seed_value = settings.get('seed', -1)
+        seed_text = "авто (случайный)" if seed_value <= 0 else str(seed_value)
+        
+        keyboard = [
+            [InlineKeyboardButton("🌡 Температура", callback_data="set_temperature")],
+            [InlineKeyboardButton("📐 Соотношение сторон", callback_data="set_aspect_ratio")],
+            [InlineKeyboardButton("📏 Размер", callback_data="set_image_size")],
+            [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+        ]
+        
+        try:
+            await query.edit_message_text(
+                f"⚙️ *Текущие настройки:*\n\n"
+                f"🌡 Температура: `{settings['temperature']}`\n"
+                f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
+                f"📏 Размер: `{settings['image_size']}`\n"
+                f"🎲 Seed: `{seed_text}`\n\n"
+                f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception:
+            await query.edit_message_text("⚙️ Меню настроек открыто. Используйте /settings")
+        return
+    elif data == "cmd_status":
+        await status_command(update, context)
+        return
+    elif data == "cmd_generate":
+        await generate_command(update, context)
+        return
+    
+    # Обработка настроек генерации
     if telegram_id not in user_settings:
         user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
     
@@ -566,13 +704,14 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("0.7", callback_data="temp_0.7"),
              InlineKeyboardButton("0.85", callback_data="temp_0.85"),
              InlineKeyboardButton("1.0", callback_data="temp_1.0")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")]
         ]
         await query.edit_message_text("Выберите температуру:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("temp_"):
         temp = float(data.split("_")[1])
         user_settings[telegram_id]["temperature"] = temp
-        await query.edit_message_text(f"✅ Температура: {temp}")
+        await query.edit_message_text(f"✅ Температура: `{temp}`\n\nИспользуйте /settings чтобы изменить другие параметры или /status для проверки.", parse_mode='Markdown')
     
     elif data == "set_aspect_ratio":
         keyboard = [
@@ -586,26 +725,28 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("16:9", callback_data="ratio_16:9"),
              InlineKeyboardButton("9:16", callback_data="ratio_9:16")],
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")]
         ]
         await query.edit_message_text("Выберите соотношение:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("ratio_"):
         ratio = data.split("_", 1)[1]
         user_settings[telegram_id]["aspect_ratio"] = ratio
-        await query.edit_message_text(f"✅ Соотношение: {ratio}")
+        await query.edit_message_text(f"✅ Соотношение: `{ratio}`\n\nИспользуйте /settings чтобы изменить другие параметры или /status для проверки.", parse_mode='Markdown')
     
     elif data == "set_image_size":
         keyboard = [
             [InlineKeyboardButton("1K", callback_data="size_1K"),
              InlineKeyboardButton("2K", callback_data="size_2K"),
              InlineKeyboardButton("4K", callback_data="size_4K")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")]
         ]
         await query.edit_message_text("Выберите размер:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("size_"):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
-        await query.edit_message_text(f"✅ Размер: {size}")
+        await query.edit_message_text(f"✅ Размер: `{size}`\n\nИспользуйте /settings чтобы изменить другие параметры или /status для проверки.", parse_mode='Markdown')
     
     elif data == "set_seed":
         current_seed = user_settings[telegram_id].get("seed", -1)
@@ -618,13 +759,15 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("2048", callback_data="seed_2048"),
              InlineKeyboardButton("12345", callback_data="seed_12345")],
             [InlineKeyboardButton("✏️ Ввести вручную", callback_data="seed_custom")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")]
         ]
         current_text = "авто" if current_seed <= 0 else str(current_seed)
         await query.edit_message_text(
             "🎲 Выберите seed:\n\n"
-            "• Случайный (-1) - каждый раз разный результат\n"
-            "• Фиксированный - воспроизводимый результат\n\n"
-            f"💡 Скопируйте seed из результата генерации.",
+            "• Случайный (-1) — каждый раз разный результат\n"
+            "• Фиксированный — воспроизводимый результат\n\n"
+            f"Текущий: `{current_text}`",
+            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
@@ -634,56 +777,94 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting_seed'] = True
             await query.edit_message_text(
                 "✏️ Введите seed (целое число):\n\n"
-                "• Положительное число - фиксированный seed\n"
-                "Или введите -1 для случайного seed"
+                "• Положительное число — фиксированный seed\n"
+                "• `-1` — случайный seed\n\n"
+                "Отправьте числом в чат."
             )
         else:
             seed = int(seed_str)
             if seed == 1:
-                seed = -1  # случайный            
+                seed = -1            
             user_settings[telegram_id]["seed"] = seed
             seed_text = "случайный" if seed <= 0 else str(seed)
-            await query.edit_message_text(f"✅ Seed: {seed_text}")
+            await query.edit_message_text(f"✅ Seed: `{seed_text}`\n\nИспользуйте /settings чтобы изменить другие параметры или /status для проверки.", parse_mode='Markdown')
 
+# -------- Новые команды --------
 
-async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка промпта через /prompt <текст>"""
     telegram_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
+    
     if not user_manager.is_authorized(telegram_id):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
-
-    if not usage_tracker.can_generate(telegram_id):
-        await update.message.reply_text("❌ Вы достигли дневного лимита!")
-        return
-
-    remaining = usage_tracker.get_remaining(telegram_id)
-    user_limit = usage_tracker.get_user_limit(telegram_id)
-    settings = get_user_settings(telegram_id)
     
-    await update.message.reply_text(
-        f"🎨 Генерация. Осталось: {remaining}/{user_limit}\n\n"
-        f"{format_settings_text(settings)}"
-    )
-
-    recent_images = image_storage.get_recent_images(telegram_id, limit=20)
-    user_selected_images[telegram_id] = []
-
-    if not recent_images:
+    text = update.message.text
+    if text.startswith('/prompt'):
+        text = text[7:].strip()
+    
+    if text:
+        session = get_user_session(telegram_id)
+        session["prompt"] = text
+        keyboard = InlineKeyboardMarkup([
+			[InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+        ])
         await update.message.reply_text(
-            "У вас нет сохранённых изображений.\n"
-            "Введите текстовый промпт:"
+            f"✅ *Промпт установлен:*\n`{text[:300]}{'...' if len(text) > 300 else ''}`\n\n"
+            f"Выберите следующее действие:",
+            parse_mode='Markdown',
+            reply_markup=keyboard
         )
-        context.user_data['awaiting_prompt'] = True
-        return
+    else:
+        session = get_user_session(telegram_id)
+        session["awaiting"] = "prompt"
+        await update.message.reply_text(
+            "📝 *Введите текстовый промпт:*\n\n"
+            "💡 Чем детальнее описание, тем лучше результат.",
+            parse_mode='Markdown'
+        )
 
-    # Отправляем превью изображений
-    batch = recent_images[:min(10, len(recent_images))]
+async def select_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор референсных изображений через /refs"""
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    if not user_manager.is_authorized(telegram_id):
+        await update.message.reply_text("❌ Доступ запрещен.")
+        return
+    
+    # Поддержка вызова из callback
+    if update.callback_query:
+        message = update.callback_query.message
+        await update.callback_query.answer()
+    else:
+        message = update.message
+    
+    recent_images = image_storage.get_recent_images(telegram_id, limit=20)
+    
+    if not recent_images:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")]
+        ])
+        await message.reply_text(
+            "📂 *У вас нет сохранённых изображений.*\n\n"
+            "Загрузите изображения через чат, а затем используйте /refs",
+            parse_mode='Markdown',
+            reply_markup=keyboard
+        )
+        return
+    
+    display_images = recent_images[:10]
+    
     media_group = []
     preview_files = []
     
-    for idx, img in enumerate(batch):
+    for idx, img in enumerate(display_images):
         preview_path = create_numbered_preview_jpg(img, idx + 1)
         preview_files.append(preview_path)
         f = open(preview_path, "rb")
@@ -692,102 +873,463 @@ async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await safe_send_media_group(context.bot, chat_id, media_group)
     except Exception as e:
-        log_console("MEDIA_GROUP_ERROR", "Failed to send media group", {"error": str(e)})
-        await update.message.reply_text("⚠️ Не удалось отправить превью изображений")
+        log_console("REFS_MEDIA_ERROR", "Failed to send media group", {"error": str(e)})
     finally:
-        # Закрываем файлы
         for media in media_group:
             try:
                 media.media.close()
             except:
                 pass
-        # Удаляем временные файлы
         for path in preview_files:
             try:
                 os.unlink(path)
             except:
                 pass
     
-    # Кнопки выбора
     keyboard = []
     row = []
-    for idx in range(len(batch)):
-        row.append(InlineKeyboardButton(f"📷 {idx+1}", callback_data=f"select_img_{idx}"))
+    session = get_user_session(telegram_id)
+    current_refs = session.get("refs", [])
+    
+    for idx, img in enumerate(display_images):
+        is_selected = img in current_refs
+        btn_text = f"✅ {idx+1}" if is_selected else f"📷 {idx+1}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"ref_sel_{idx}"))
         if len(row) == 5:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
     
-    keyboard.append([InlineKeyboardButton("✅ Готово", callback_data="images_done")])
-    keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_images")])
+    keyboard.append([InlineKeyboardButton("💾 Сохранить выбор", callback_data="refs_done")])
+    keyboard.append([
+        InlineKeyboardButton("❌ Очистить все", callback_data="refs_clear"),
+        InlineKeyboardButton("▶️ Генерировать", callback_data="cmd_generate")
+    ])
     
-    await update.message.reply_text(
-        "Выберите референсные изображения (нажмите на номер):",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    selected_count = len(current_refs)
+    await message.reply_text(
+        f"📸 *Выбор референсных изображений*\n"
+        f"Выбрано: `{selected_count}`\n\n"
+        f"Нажмите на номер для выбора/отмены:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
     
-    context.user_data['recent_images'] = recent_images
-    context.user_data['awaiting_prompt'] = False
+    context.user_data['ref_selection_images'] = display_images
 
-
-async def image_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора референсов"""
     query = update.callback_query
     await query.answer()
     telegram_id = update.effective_user.id
-
-    if query.data.startswith("select_img_"):
-        img_idx = int(query.data.split("_")[2])
-        recent_images = context.user_data.get('recent_images', [])
-        
-        if img_idx < len(recent_images):
-            selected_img = recent_images[img_idx]
-            if telegram_id not in user_selected_images:
-                user_selected_images[telegram_id] = []
-            
-            if selected_img in user_selected_images[telegram_id]:
-                user_selected_images[telegram_id].remove(selected_img)
+    data = query.data
+    
+    session = get_user_session(telegram_id)
+    images = context.user_data.get('ref_selection_images', [])
+    
+    if data.startswith("ref_sel_"):
+        idx = int(data.split("_")[2])
+        if idx < len(images):
+            img_path = images[idx]
+            if img_path in session["refs"]:
+                session["refs"].remove(img_path)
                 await query.answer("❌ Убрано")
             else:
-                user_selected_images[telegram_id].append(selected_img)
+                session["refs"].append(img_path)
                 await query.answer("✅ Добавлено")
-
-        selected_count = len(user_selected_images.get(telegram_id, []))
         
-        # Обновляем кнопки
         keyboard = []
         row = []
-        for idx, img in enumerate(recent_images[:10]):
-            is_selected = img in user_selected_images.get(telegram_id, [])
-            button_text = f"✓ {idx+1}" if is_selected else f"📷 {idx+1}"
-            row.append(InlineKeyboardButton(button_text, callback_data=f"select_img_{idx}"))
+        for i, img in enumerate(images):
+            is_sel = img in session["refs"]
+            txt = f"✅ {i+1}" if is_sel else f"📷 {i+1}"
+            row.append(InlineKeyboardButton(txt, callback_data=f"ref_sel_{i}"))
             if len(row) == 5:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
         
-        keyboard.append([InlineKeyboardButton("✅ Готово", callback_data="images_done")])
-        keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_images")])
+        keyboard.append([InlineKeyboardButton("💾 Сохранить выбор", callback_data="refs_done")])
+        keyboard.append([
+            InlineKeyboardButton("❌ Очистить все", callback_data="refs_clear"),
+            InlineKeyboardButton("▶️ Генерировать", callback_data="cmd_generate")
+        ])
         
+        selected = len(session["refs"])
         try:
             await query.edit_message_text(
-                f"Выбрано: {selected_count}\nНажмите на номер чтобы выбрать/убрать:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                f"📸 *Выбор референсных изображений*\n"
+                f"Выбрано: `{selected}`\n\n"
+                f"Нажмите на номер для выбора/отмены:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
             )
         except Exception:
             pass
-
-    elif query.data in ("images_done", "skip_images"):
-        selected_count = len(user_selected_images.get(telegram_id, []))
+            
+    elif data == "refs_clear":
+        session["refs"] = []
         await query.edit_message_text(
-            f"Выбрано изображений: {selected_count}\n\n"
-            f"Введите текстовый промпт:"
+            "❌ Референсы очищены.\n\n"
+            "Используйте /refs чтобы выбрать снова или /gen для генерации без референсов, /status — проверить конфигурацию, /help — подробная помощь.",
+            parse_mode='Markdown'
         )
-        context.user_data['awaiting_prompt'] = True
+        context.user_data.pop('ref_selection_images', None)
+        
+    elif data == "refs_done":
+        count = len(session["refs"])
+        keyboard = InlineKeyboardMarkup([
+			[InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+        ])
+        await query.edit_message_text(
+            f"💾 *Сохранено референсов: {count}*\n\n"
+            f"Выберите действие:",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        context.user_data.pop('ref_selection_images', None)
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает текущие настройки, промпт и референсы с кнопкой настроек"""
+    telegram_id = update.effective_user.id
+    
+    if not user_manager.is_authorized(telegram_id):
+        await update.message.reply_text("❌ Доступ запрещен.")
+        return
+    
+    # Поддержка вызова из callback
+    if update.callback_query:
+        message = update.callback_query.message
+        await update.callback_query.answer()
+    else:
+        message = update.message
+    
+    settings = get_user_settings(telegram_id)
+    session = get_user_session(telegram_id)
+    
+    seed_val = settings.get('seed', -1)
+    seed_text = "🎲 авто" if seed_val <= 0 else f"🎲 `{seed_val}`"
+    
+    refs_count = len(session.get("refs", []))
+    prompt = session.get("prompt", "")
+    prompt_text = f"`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`" if prompt else "⚠️ *не задан*"
+    
+    # Отправляем превью референсов если есть (до 10 штук)
+    refs = session.get("refs", [])
+    if refs:
+        media_group = []
+        try:
+            for idx, ref_path in enumerate(refs[:10]):
+                with open(ref_path, "rb") as f:
+                    photo_bytes = f.read()
+                    caption = f"📷 Референс {idx+1}" if len(refs) > 1 else "📷 Референс"
+                    media_group.append(InputMediaPhoto(media=photo_bytes, caption=caption))
+            
+            if media_group:
+                await message.reply_media_group(media_group)
+        except Exception as e:
+            log_console("STATUS_PREVIEW_ERROR", "Failed to send refs preview", {"error": str(e)})
+    
+    text = (
+        f"📊 *Текущая конфигурация генерации*\n\n"
+        f"📝 *Промпт:*\n{prompt_text}\n\n"
+        f"🖼 *Референсы:* `{refs_count} шт.`\n"
+        f"🌡 Температура: `{settings['temperature']}`\n"
+        f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
+        f"📏 Размер: `{settings['image_size']}`\n"
+        f"{seed_text}\n\n"
+    )
+    
+    if prompt:
+        text += "✅ *Готова к генерации!*"
+        keyboard_buttons = [
+            [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("⚙️ Изменить настройки", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")]
+        ]
+    else:
+        text += "⚠️ *Задайте промпт перед генерацией*"
+        keyboard_buttons = [
+            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")]
+        ]
+    
+    # Добавляем кнопку управления референсами 
+    keyboard_buttons.insert(1, [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")])
+    
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    
+    await message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
+
+async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск генерации с текущими настройками по команде /gen"""
+    telegram_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Поддержка вызова из callback
+    if update.callback_query:
+        await update.callback_query.answer()
+        message = update.callback_query.message
+    else:
+        message = update.message
+    
+    if not user_manager.is_authorized(telegram_id):
+        await message.reply_text("❌ Доступ запрещен.")
+        return
+    
+    if not usage_tracker.can_generate(telegram_id):
+        await message.reply_text("❌ Дневной лимит генераций исчерпан!")
+        return
+    
+    session = get_user_session(telegram_id)
+    settings = get_user_settings(telegram_id)
+    
+    prompt = session.get("prompt", "")
+    if not prompt:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]
+        ])
+        await message.reply_text(
+            "⚠️ *Промпт не задан!*\n\n"
+            "Нажмите кнопку ниже или используйте /prompt ваше описание",
+            parse_mode='Markdown',
+            reply_markup=keyboard
+        )
+        return
+    
+    refs = session.get("refs", [])
+    
+    # Отправляем сообщение о старте
+    start_msg = await message.reply_text("🔄 *Запуск генерации...*", parse_mode='Markdown')
+    
+    # Запускаем генерацию в фоне
+    asyncio.create_task(
+        _run_generation(
+            context.bot, chat_id, telegram_id, 
+            prompt, refs, settings, start_msg.message_id
+        )
+    )
+
+async def _run_generation(bot, chat_id, telegram_id, prompt, refs_paths, settings, status_message_id=None):
+    """Фоновая генерация с сохранением конфигурации"""
+    start_time = datetime.now()
+    config_id = generate_config_id()
+    
+    try:
+        # Обновляем сообщение о статусе
+        settings_text = format_settings_text(settings)
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text=f"🔄 *Генерация изображения...*\n\n"
+                     f"📝 Промпт: `{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`\n"
+                     f"🖼 Референсов: {len(refs_paths)}\n"
+                     f"{settings_text}\n\n"
+                     f"⏱ Это может занять 1-5 минут",
+                parse_mode='Markdown'
+            )
+        except Exception:
+            pass
+        
+        # Загружаем референсы
+        ref_data = []
+        for p in refs_paths:
+            try:
+                with open(p, "rb") as f:
+                    ref_data.append(f.read())
+            except Exception as e:
+                log_console("REF_LOAD_ERROR", str(e))
+        
+        seed_setting = settings.get("seed", -1)
+        
+        AIRequestLogger.log({
+            "event": "generation_start",
+            "user_id": telegram_id,
+            "prompt": prompt,
+            "num_refs": len(ref_data),
+            "settings": settings,
+            "config_id": config_id
+        })
+        
+        # Генерация
+        img_bytes, error, used_seed = await gemini_generator.generate_image(
+            prompt=prompt,
+            reference_images=ref_data,
+            temperature=settings.get("temperature", 1.0),
+            aspect_ratio=settings.get("aspect_ratio", "16:9"),
+            image_size=settings.get("image_size", "1K"),
+            seed=seed_setting,
+        )
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        
+        if error or not img_bytes:
+            error_msg = f"❌ Ошибка генерации: `{error or 'Unknown'}`"
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    text=error_msg,
+                    parse_mode='Markdown'
+                )
+            except Exception:
+                await safe_send_text(bot, chat_id, error_msg)
+            return
+        
+        # Сохраняем изображение
+        saved_path = image_storage.save_image(telegram_id, img_bytes, prefix="generated")
+        
+        # Увеличиваем счетчик использования
+        usage_tracker.increment_usage(telegram_id)
+        remaining = usage_tracker.get_remaining(telegram_id)
+        user_limit = usage_tracker.get_user_limit(telegram_id)
+        
+        # Сохраняем конфигурацию для повторного использования
+        save_generation_config(telegram_id, config_id, prompt, settings, refs_paths)
+        
+        # Удаляем статусное сообщение
+        try:
+            await bot.delete_message(chat_id, status_message_id)
+        except Exception:
+            pass
+                
+        # 1. Отправляем фото с минимальной подписью
+        await safe_send_photo(bot, chat_id, saved_path, caption=f"✅ Готово! ⏱{int(duration)}с")
+               
+        # 2. Мета-информация (без markdown внутри переменных для безопасности)
+        meta_text = (
+            f"🎲 Seed: {used_seed}\n"
+            f"🖼 Референсов: {len(ref_data)}\n"
+            f"⏱ Время: {int(duration)}с\n"
+            f"📊 Осталось: {remaining}/{user_limit}\n\n"
+            f"💾 /set_{config_id}"
+        )
+        await safe_send_text(bot, chat_id, meta_text, parse_mode=None)
+        
+        # 3. Оригинал файлом
+        await safe_send_document(bot, chat_id, saved_path, caption=f"📎 {len(img_bytes)//1024} KB")
+        
+        # 4. Клавиатура действий
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Повторить", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+        ])
+        await safe_send_text(bot, chat_id, "Выберите действие:", reply_markup=keyboard)
+        
+        AIRequestLogger.log({
+            "event": "generation_success",
+            "user_id": telegram_id,
+            "config_id": config_id,
+            "seed": used_seed,
+            "duration": duration
+        })
+        
+    except Exception as e:
+        log_console("GENERATION_ERROR", str(e), {"trace": traceback.format_exc()})
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text="❌ Произошла критическая ошибка при генерации."
+            )
+        except Exception:
+            await safe_send_text(bot, chat_id, "❌ Произошла критическая ошибка при генерации.")
+
+async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Загрузка сохраненной конфигурации по /set_<id> или кнопке"""
+    telegram_id = update.effective_user.id
+    
+    # Обработка callback от кнопки
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        if data.startswith("load_config_"):
+            config_id = data.replace("load_config_", "")
+            message = query.message
+        else:
+            return
+    else:
+        text = update.message.text.strip()
+        match = re.match(r'^/set_([a-zA-Z0-9_]+)$', text)
+        if not match:
+            await update.message.reply_text("❌ Неверный формат. Используйте: `/set_<id>`", parse_mode='Markdown')
+            return
+        config_id = match.group(1)
+        message = update.message
+    
+    if not user_manager.is_authorized(telegram_id):
+        await message.reply_text("❌ Доступ запрещен.")
+        return
+    
+    config = load_generation_config(telegram_id, config_id)
+    
+    if not config:
+        await message.reply_text(f"❌ Конфигурация `{config_id}` не найдена.", parse_mode='Markdown')
+        return
+    
+    # Устанавливаем настройки в сессию
+    session = get_user_session(telegram_id)
+    session["prompt"] = config["prompt"]
+    session["refs"] = config["references"]
+    
+    # Обновляем settings
+    loaded_settings = config.get("settings", {})
+    if telegram_id not in user_settings:
+        user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
+    for key in ["temperature", "aspect_ratio", "image_size", "seed"]:
+        if key in loaded_settings:
+            user_settings[telegram_id][key] = loaded_settings[key]
+    
+    # Формируем отчет
+    refs_count = len(config["references"])
+    total_refs_saved = len(config.get("references", []))
+    
+    seed_val = loaded_settings.get('seed', -1)
+    seed_text = "авто" if seed_val <= 0 else str(seed_val)
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+        [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+        [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+    ])
+    
+    await message.reply_text(
+        f"✅ *Конфигурация загружена!*\n\n"
+        f"📝 Промпт:\n`{config['prompt'][:3500]}{'...' if len(config['prompt']) > 3500 else ''}`\n\n"
+        f"🖼 Референсов доступно: `{refs_count}/{total_refs_saved}` шт.\n"
+        f"🌡 Температура: `{loaded_settings.get('temperature')}`\n"
+        f"📐 Соотношение: `{loaded_settings.get('aspect_ratio')}`\n"
+        f"📏 Размер: `{loaded_settings.get('image_size')}`\n"
+        f"🎲 Seed: `{seed_text}`\n\n"
+        f"Теперь можно запускать генерацию:",
+        parse_mode='Markdown',
+        reply_markup=keyboard
+    )
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена текущего действия"""
+    telegram_id = update.effective_user.id
+    session = get_user_session(telegram_id)
+    session["awaiting"] = None
+    await update.message.reply_text("❌ Действие отменено.", reply_markup=get_main_menu_keyboard())
+
+# -------- Обработка фото и текста --------
 
 async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение загруженных фото для дальнейшего использования как референсов"""
     telegram_id = update.effective_user.id
     if not user_manager.is_authorized(telegram_id):
         await update.message.reply_text("❌ Доступ запрещен.")
@@ -808,190 +1350,35 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "path": str(saved_path), 
             "size_kb": len(photo_bytes)//1024
         })
-        await update.message.reply_text(f"✅ Изображение сохранено: {saved_path.name}")
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")]
+        ])
+        
+        await update.message.reply_text(
+            f"✅ *Изображение сохранено:* `{saved_path.name}`\n\n"
+            f"Теперь вы можете выбрать его как референс:",
+            parse_mode='Markdown',
+            reply_markup=keyboard
+        )
     except Exception as e:
         log_console("PHOTO_ERROR", "Error saving photo", {"error": str(e)})
-        await update.message.reply_text("❌ Ошибка при сохранении.")
+        await update.message.reply_text("❌ Ошибка при сохранении изображения.")
 
-
-async def _background_generate_and_send(
-    bot, 
-    chat_id: int, 
-    telegram_id: int, 
-    prompt: str, 
-    reference_images_paths: List[Path], 
-    settings: Dict
-):
-    generation_start_time = datetime.now()
-    
-    try:
-        settings_text = format_settings_text(settings)
-        
-        try:
-            await safe_send_text(
-                bot, 
-                chat_id, 
-                f"🔄 Генерирую изображение...\n\n"
-                f"{settings_text}\n\n"
-                f"⏱ Это может занять 1-5 минут"
-            )
-        except Exception as e:
-            log_console("START_MSG_ERROR", "Failed to send start message", {"error": str(e)})
-        
-        # Загружаем референсы
-        reference_images_data = []
-        for p in reference_images_paths:
-            try:
-                with open(p, "rb") as f:
-                    img_data = f.read()
-                    reference_images_data.append(img_data)
-            except Exception as e:
-                log_console("REF_READ_ERROR", f"Failed to read {p}", {"error": str(e)})
-
-        seed_setting = settings.get("seed", -1)
-        
-        AIRequestLogger.log({
-            "event": "request_start",
-            "user_id": telegram_id,
-            "prompt": prompt,
-            "num_reference_images": len(reference_images_data),
-            "settings": settings,
-        })
-
-        # Генерация
-        generated_bytes, error_reason, used_seed = await gemini_generator.generate_image(
-            prompt=prompt,
-            reference_images=reference_images_data,
-            temperature=settings.get("temperature", 1.0),
-            aspect_ratio=settings.get("aspect_ratio", "16:9"),
-            image_size=settings.get("image_size", "1K"),
-            seed=seed_setting,
-        )
-
-        generation_duration = (datetime.now() - generation_start_time).total_seconds()
-        
-        AIRequestLogger.log({
-            "event": "request_end",
-            "user_id": telegram_id,
-            "prompt": prompt,
-            "success": generated_bytes is not None,
-            "error": error_reason,
-            "used_seed": used_seed,
-            "duration_seconds": generation_duration,
-        })
-
-        # Обработка ошибок
-        if error_reason or not generated_bytes:
-            log_console("GENERATION_FAILED", "Failed", {
-                "error": error_reason,
-                "seed": used_seed,
-                "duration": round(generation_duration, 1),
-            })
-            
-            error_messages = {
-                "NO_IMAGE": (
-                    f"❌ Модель не смогла создать изображение.\n\n"
-                    f"💡 Советы:\n"
-                    f"• Опишите конкретное изображение\n"
-                    f"• Используйте английский язык\n"
-                    f"• Добавьте детали: стиль, цвета\n\n"
-                    f"🎲 Seed: {used_seed}\n"
-                    f"⏱ Время: {int(generation_duration)}s"
-                ),
-                "SAFETY": (
-                    f"❌ Промпт заблокирован фильтрами.\n\n"
-                    f"🎲 Seed: {used_seed}"
-                ),
-                "TIMEOUT": (
-                    f"❌ Превышено время ожидания.\n\n"
-                    f"💡 Упростите промпт или уменьшите размер.\n\n"
-                    f"🎲 Seed: {used_seed}"
-                ),
-                "NO_CANDIDATES": f"❌ API не вернул результатов.\n\n🎲 Seed: {used_seed}",
-                "NO_IMAGE_DATA": f"❌ Ответ без изображения.\n\n🎲 Seed: {used_seed}",
-                "CHUNK_TOO_BIG": f"❌ Изображение слишком большое. Уменьшите размер в /settings\n\n🎲 Seed: {used_seed}",
-            }
-            
-            if error_reason and error_reason.startswith("MODEL_RETURNED_TEXT:"):
-                model_text = error_reason.replace("MODEL_RETURNED_TEXT:", "").strip()
-                error_msg = (
-                    f"❌ Модель ответила текстом:\n\n"
-                    f"{model_text[:400]}{'...' if len(model_text) > 400 else ''}\n\n"
-                    f"🎲 Seed: {used_seed}"
-                )
-            elif error_reason and error_reason.startswith("ERROR:"):
-                error_detail = error_reason.replace("ERROR:", "").strip()
-                error_msg = f"❌ Ошибка: {error_detail[:200]}\n\n🎲 Seed: {used_seed}"
-            else:
-                error_msg = error_messages.get(error_reason, f"❌ Ошибка: {error_reason}\n\n🎲 Seed: {used_seed}")
-            
-            try:
-                await safe_send_text(bot, chat_id, error_msg)
-            except Exception:
-                pass
-            
-            return
-
-        # Успех
-        log_console("GENERATION_SUCCESS", "Success", {
-            "seed": used_seed,
-            "size_kb": len(generated_bytes) // 1024,
-            "duration": round(generation_duration, 1),
-        })
-
-        saved_path = image_storage.save_image(telegram_id, generated_bytes, prefix="generated")
-        
-        usage_tracker.increment_usage(telegram_id)
-
-        remaining = usage_tracker.get_remaining(telegram_id)
-        user_limit = usage_tracker.get_user_limit(telegram_id)
-
-        caption = (
-            f"✅ Готово!\n\n"
-            f"📝 Промпт: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n"
-            f"🖼 Референсов: {len(reference_images_data)}\n"
-            f"⏱ Время: {int(generation_duration)}s\n"
-            f"📊 Осталось: {remaining}/{user_limit}\n\n"
-            f"{format_settings_text(settings, used_seed=used_seed)}\n\n"
-            f"💡 Для повтора установите seed {used_seed} в /settings"
-        )
-
-        try:
-            await safe_send_photo(bot, chat_id, saved_path, caption=caption)
-        except Exception as e:
-            log_console("SEND_PHOTO_FAILED", "Failed", {"error": str(e)})
-            try:
-                await safe_send_text(bot, chat_id, f"✅ Готово!\n\n🎲 Seed: {used_seed}\n\nОтправляю файл...")
-            except:
-                pass
-        
-        try:
-            await safe_send_document(
-                bot, 
-                chat_id, 
-                saved_path, 
-                caption=f"📎 Оригинал ({len(generated_bytes) // 1024} KB) | Seed: {used_seed}"
-            )
-        except Exception as e:
-            log_console("SEND_DOC_FAILED", "Failed", {"error": str(e)})
-
-    except Exception as e:
-        generation_duration = (datetime.now() - generation_start_time).total_seconds()
-        log_console("BG_GENERATE_CRITICAL", "Critical error", {
-            "error": str(e), 
-            "trace": traceback.format_exc(),
-        })
-        try:
-            await safe_send_text(bot, chat_id, f"❌ Критическая ошибка. Попробуйте позже.")
-        except:
-            pass
-
-
-async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений (для интерактивного ввода промпта или seed)"""
     telegram_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    session = get_user_session(telegram_id)
     
-    # Ввод seed
+    # Обработка отмены через callback
+    if update.callback_query and update.callback_query.data == "cancel_input":
+        await update.callback_query.answer()
+        session["awaiting"] = None
+        await update.callback_query.edit_message_text("❌ Ввод отменен.")
+        return
+    
+    # Проверяем, ожидаем ли ввод seed
     if context.user_data.get('awaiting_seed', False):
         try:
             seed = int(update.message.text.strip())
@@ -999,60 +1386,57 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
             user_settings[telegram_id]["seed"] = seed
             seed_text = "авто (случайный)" if seed <= 0 else str(seed)
-            await update.message.reply_text(f"✅ Seed: {seed_text}")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+                [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")]
+            ])
+            await update.message.reply_text(
+                f"✅ Seed установлен: `{seed_text}`",
+                parse_mode='Markdown',
+                reply_markup=keyboard
+            )
         except ValueError:
-            await update.message.reply_text("❌ Введите целое число (например: 1234567890 или -1 для авто)")
+            await update.message.reply_text("❌ Введите целое число (например: `1234567890` или `-1` для авто)", parse_mode='Markdown')
         context.user_data['awaiting_seed'] = False
         return
     
-    if not context.user_data.get('awaiting_prompt', False):
-        return
-
-    prompt = update.message.text
-    if not user_manager.is_authorized(telegram_id):
-        await update.message.reply_text("❌ Доступ запрещен.")
-        return
-
-    if not usage_tracker.can_generate(telegram_id):
-        await update.message.reply_text("❌ Лимит исчерпан!")
-        context.user_data['awaiting_prompt'] = False
-        if telegram_id in user_selected_images:
-            del user_selected_images[telegram_id]
-        return
-
-    await update.message.reply_text(
-        "⏳ Принял промпт, запускаю генерацию.\n"
-        "⏱ Может занять до 5 минут."
-    )
-    
-    log_console("PROMPT_RECEIVED", f"User {telegram_id}", {
-        "prompt": prompt[:200],
-    })
-
-    selected_images = user_selected_images.get(telegram_id, [])
-    settings = get_user_settings(telegram_id)
-
-    AIRequestLogger.log({
-        "event": "request_queued",
-        "user_id": telegram_id,
-        "prompt": prompt,
-        "num_reference_images": len(selected_images),
-        "settings": settings,
-    })
-
-    asyncio.create_task(
-        _background_generate_and_send(
-            context.bot, chat_id, telegram_id, prompt, 
-            list(selected_images), settings
+    # Проверяем, ожидаем ли ввод промпта
+    if session.get("awaiting") == "prompt":
+        prompt = update.message.text
+        if prompt.startswith('/'):
+            await update.message.reply_text("❌ Промпт не может начинаться с `/`. Введите обычный текст или используйте /cancel")
+            return
+        
+        session["prompt"] = prompt
+        session["awaiting"] = None
+        
+        keyboard = InlineKeyboardMarkup([
+			[InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")]
+        ])
+        
+        await update.message.reply_text(
+            f"✅ *Промпт установлен:*\n`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`\n\n"
+            f"Выберите следующее действие:",
+            parse_mode='Markdown',
+            reply_markup=keyboard
         )
+        return
+    
+    # Если не ожидаем ввод, показываем меню
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+        [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")]
+    ])
+    await update.message.reply_text(
+        "ℹ️ Выберите команду из меню ниже:",
+        reply_markup=keyboard
     )
-
-    if telegram_id in user_selected_images:
-        del user_selected_images[telegram_id]
-    context.user_data['awaiting_prompt'] = False
-    if 'recent_images' in context.user_data:
-        del context.user_data['recent_images']
-
 
 async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1061,15 +1445,14 @@ async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
     if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Использование: /reset_usage <telegram_id>")
+        await update.message.reply_text("Использование: /reset_usage <telegram_id>", parse_mode='Markdown')
         return
     try:
         target_user_id = int(context.args[0])
         usage_tracker.reset_usage(target_user_id)
-        await update.message.reply_text(f"✅ Лимиты {target_user_id} сброшены.")
+        await update.message.reply_text(f"✅ Лимиты пользователя `{target_user_id}` сброшены.", parse_mode='Markdown')
     except ValueError:
-        await update.message.reply_text("Неверный ID.")
-
+        await update.message.reply_text("Неверный ID пользователя.")
 
 async def global_error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
     error_msg = str(context.error)
@@ -1085,10 +1468,9 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
     
     try:
         if update and update.effective_chat:
-            await safe_send_text(context.bot, update.effective_chat.id, "⚠️ Ошибка.")
+            await safe_send_text(context.bot, update.effective_chat.id, "⚠️ Произошла ошибка. Попробуйте позже.")
     except:
         pass
-
 
 def main():
     request = HTTPXRequest(
@@ -1105,28 +1487,45 @@ def main():
         .build()
     )
 
+    # Основные команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("settings", settings_menu))
     application.add_handler(CommandHandler("usage", usage_command))
     application.add_handler(CommandHandler("reset_usage", reset_user_usage))
-    application.add_handler(CommandHandler("generate", generate_start))
-
+    
+    # Новые команды рабочего процесса
+    application.add_handler(CommandHandler("prompt", set_prompt_command))
+    application.add_handler(CommandHandler("refs", select_refs_command))
+    application.add_handler(CommandHandler("gen", generate_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    
+    # Обработка команд загрузки конфига /set_<id> и кнопок load_config_
+    application.add_handler(CallbackQueryHandler(load_config_command, pattern=r"^load_config_"))
+    application.add_handler(MessageHandler(filters.Regex(r'^/set_[a-zA-Z0-9_]+$'), load_config_command))
+    
+    # Callbacks для настроек и навигации
     application.add_handler(
-        CallbackQueryHandler(settings_callback, pattern="^(set_|temp_|ratio_|size_|seed_)")
+        CallbackQueryHandler(settings_callback, pattern="^(set_|temp_|ratio_|size_|seed_|cmd_)")
     )
+    
+    # Callbacks для выбора референсов
     application.add_handler(
-        CallbackQueryHandler(image_selection_callback, pattern="^(select_img_|images_done|skip_images)")
+        CallbackQueryHandler(refs_callback, pattern="^(ref_sel_|refs_done|refs_clear|cancel_input)")
     )
 
+    # Фото и документы
     application.add_handler(MessageHandler(filters.PHOTO, process_photo))
     application.add_handler(MessageHandler(filters.Document.IMAGE, process_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_message))
+    
+    # Текстовые сообщения (для интерактивного ввода)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     application.add_error_handler(global_error_handler)
 
     print("=" * 60)
-    print("🤖 Gemini Image Generator Bot")
+    print("🤖 Gemini Image Generator Bot (Interactive)")
     print("=" * 60)
     print(f"📊 Лимит: {DAILY_LIMIT}/день (обычный)")
     print(f"⭐ Лимит Premium: {DAILY_LIMIT_PREMIUM}/день")
@@ -1140,7 +1539,6 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
-
 
 if __name__ == "__main__":
     main()
