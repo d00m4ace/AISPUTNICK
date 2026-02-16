@@ -197,7 +197,7 @@ class GeminiImageGenerator:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.model = "gemini-3-pro-image-preview"
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     
     def _sync_generate(
         self,
@@ -1122,6 +1122,22 @@ async def _run_generation(bot, chat_id, telegram_id, prompt, refs_paths, setting
     config_id = generate_config_id()
     
     try:
+        # Формируем финальный промпт с улучшенными инструкциями
+        final_prompt = f"""You are a professional image generator. Your task is to ALWAYS create an image based on the user's request below.
+
+CRITICAL INSTRUCTIONS:
+- You MUST generate exactly ONE image, no matter what
+- Do NOT refuse or explain why you cannot create something
+- If the request seems unclear, interpret it creatively and generate anyway
+- Focus on visual interpretation and artistic expression
+- Avoid text responses - only generate the image
+- Be creative and flexible in your interpretation
+
+User's request:
+{prompt}
+
+Remember: Your only job is to CREATE THE IMAGE. Generate it now."""
+        
         # Обновляем сообщение о статусе
         settings_text = format_settings_text(settings)
         try:
@@ -1158,15 +1174,46 @@ async def _run_generation(bot, chat_id, telegram_id, prompt, refs_paths, setting
             "config_id": config_id
         })
         
-        # Генерация
+        # Первая попытка генерации
         img_bytes, error, used_seed = await gemini_generator.generate_image(
-            prompt=prompt,
+            prompt=final_prompt,
             reference_images=ref_data,
             temperature=settings.get("temperature", 1.0),
             aspect_ratio=settings.get("aspect_ratio", "16:9"),
             image_size=settings.get("image_size", "1K"),
             seed=seed_setting,
         )
+        
+        # Если первая попытка не удалась - пробуем ещё раз с упрощенным промптом
+        if error or not img_bytes:
+            log_console("GENERATION_RETRY", f"First attempt failed: {error}, trying simplified prompt")
+            
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    text=f"🔄 *Повторная попытка*\n\n"
+                         f"⚠️ Первая попытка не удалась: `{error}`\n"
+                         f"🔄 Пробуем упрощенный подход",
+                    parse_mode='Markdown'
+                )
+            except Exception:
+                pass
+            
+            # Упрощенный промпт для второй попытки
+            simplified_prompt = f"""Create a safe, artistic, and creative image based on this concept: {prompt[:500]}
+
+Important: Focus on visual beauty, artistic interpretation, and creative expression. Generate the image now."""
+            
+            # Вторая попытка: С референсами, более консервативная температура
+            img_bytes, error, used_seed = await gemini_generator.generate_image(
+                prompt=simplified_prompt,
+                reference_images=ref_data,  # ОСТАВЛЯЕМ референсы
+                temperature=0.7,  # Более консервативная температура
+                aspect_ratio=settings.get("aspect_ratio", "16:9"),
+                image_size=settings.get("image_size", "1K"),
+                seed=seed_setting,
+            )
         
         duration = (datetime.now() - start_time).total_seconds()
         
