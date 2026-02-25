@@ -71,6 +71,17 @@ DEFAULT_SETTINGS = {
     "seed": -1
 }
 
+# ─────────────────────────────────────────────
+# УТИЛИТА: безопасное редактирование сообщения
+# ─────────────────────────────────────────────
+async def safe_edit_text(query, text: str, **kwargs):
+    """Редактирует сообщение, игнорируя ошибку 'Message is not modified'."""
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except Exception as e:
+        if "Message is not modified" not in str(e):
+            raise
+
 class AIRequestLogger:
     LOG_FILE = "nano_ai_requests_log.jsonl"
 
@@ -778,13 +789,15 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Навигационные команды
     if data == "cmd_prompt":
-        await query.edit_message_text("📝 Введите промпт:", parse_mode='Markdown')
+        await safe_edit_text(query, "📝 Введите промпт:", parse_mode='Markdown')
         session = get_user_session(telegram_id)
         session["awaiting"] = "prompt"
         return
+
     elif data == "cmd_refs":
         await select_refs_command(update, context)
         return
+
     elif data == "cmd_settings":
         settings = get_user_settings(telegram_id)
         seed_value = settings.get('seed', -1)
@@ -797,26 +810,27 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
             [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ]
-        try:
-            await query.edit_message_text(
-                f"⚙️ *Текущие настройки:*\n\n"
-                f"🌡 Температура: `{settings['temperature']}`\n"
-                f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
-                f"📏 Размер: `{settings['image_size']}`\n"
-                f"🎲 Seed: `{seed_text}`\n\n"
-                f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception:
-            await query.edit_message_text("⚙️ Меню настроек открыто. Используйте /settings")
+        await safe_edit_text(
+            query,
+            f"⚙️ *Текущие настройки:*\n\n"
+            f"🌡 Температура: `{settings['temperature']}`\n"
+            f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
+            f"📏 Размер: `{settings['image_size']}`\n"
+            f"🎲 Seed: `{seed_text}`\n\n"
+            f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
+
     elif data == "cmd_status":
         await status_command(update, context)
         return
+
     elif data == "cmd_generate":
         await generate_command(update, context)
         return
+
     elif data == "cmd_download_refs":
         await download_refs_command(update, context)
         return
@@ -835,12 +849,13 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("1.0", callback_data="temp_1.0")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
-        await query.edit_message_text("Выберите температуру:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_edit_text(query, "Выберите температуру:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("temp_"):
         temp = float(data.split("_")[1])
         user_settings[telegram_id]["temperature"] = temp
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             f"✅ Температура: `{temp}`\n\nИспользуйте /settings или /status.",
             parse_mode='Markdown',
         )
@@ -859,12 +874,13 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
-        await query.edit_message_text("Выберите соотношение:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_edit_text(query, "Выберите соотношение:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("ratio_"):
         ratio = data.split("_", 1)[1]
         user_settings[telegram_id]["aspect_ratio"] = ratio
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             f"✅ Соотношение: `{ratio}`\n\nИспользуйте /settings или /status.",
             parse_mode='Markdown',
         )
@@ -876,12 +892,13 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("4K", callback_data="size_4K")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
-        await query.edit_message_text("Выберите размер:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_edit_text(query, "Выберите размер:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("size_"):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             f"✅ Размер: `{size}`\n\nИспользуйте /settings или /status.",
             parse_mode='Markdown',
         )
@@ -900,7 +917,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
         current_text = "авто" if current_seed <= 0 else str(current_seed)
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             "🎲 Выберите seed:\n\n"
             "• Случайный (-1) — каждый раз разный результат\n"
             "• Фиксированный — воспроизводимый результат\n\n"
@@ -913,7 +931,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seed_str = data.split("_", 1)[1]
         if seed_str == "custom":
             context.user_data['awaiting_seed'] = True
-            await query.edit_message_text(
+            await safe_edit_text(
+                query,
                 "✏️ Введите seed (целое число):\n\n"
                 "• Положительное число — фиксированный seed\n"
                 "• `-1` — случайный seed\n\n"
@@ -925,7 +944,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 seed = -1
             user_settings[telegram_id]["seed"] = seed
             seed_text = "случайный" if seed <= 0 else str(seed)
-            await query.edit_message_text(
+            await safe_edit_text(
+                query,
                 f"✅ Seed: `{seed_text}`\n\nИспользуйте /settings или /status.",
                 parse_mode='Markdown',
             )
@@ -1103,7 +1123,8 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "refs_clear":
         session["refs"] = []
         context.user_data.pop("ref_selection_images", None)
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             "❌ Референсы очищены.\n\n"
             "Используйте /refs чтобы выбрать снова или /gen для генерации без референсов.",
             parse_mode="Markdown",
@@ -1120,7 +1141,8 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
             [InlineKeyboardButton("📥 Скачать референсы", callback_data="cmd_download_refs")],
         ])
-        await query.edit_message_text(
+        await safe_edit_text(
+            query,
             f"💾 *Сохранено референсов: {count}*\n\nВыберите действие:",
             reply_markup=keyboard,
             parse_mode="Markdown",
@@ -1128,7 +1150,7 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "cancel_input":
         session["awaiting"] = None
-        await query.edit_message_text("❌ Ввод отменен.")
+        await safe_edit_text(query, "❌ Ввод отменен.")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1161,7 +1183,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for idx, ref_path in enumerate(refs[:10]):
                 with open(ref_path, "rb") as f:
                     photo_bytes = f.read()
-                # ФИКС: ресайзим перед отправкой чтобы не превышать 10 МБ
                 photo_bytes = resize_for_telegram(photo_bytes)
                 caption = f"📷 Референс {idx+1}" if len(refs) > 1 else "📷 Референс"
                 media_group.append(InputMediaPhoto(media=photo_bytes, caption=caption))
@@ -1288,8 +1309,9 @@ async def _run_generation(
                 ),
                 parse_mode="Markdown",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                log_console("STATUS_EDIT_ERROR", str(e))
 
         ref_data: List[bytes] = []
         for p in refs_paths:
@@ -1324,8 +1346,9 @@ async def _run_generation(
                     ),
                     parse_mode="Markdown",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    log_console("RETRY_EDIT_ERROR", str(e))
 
         img_bytes, error, used_seed = await gemini_generator.generate_image(
             prompt=final_prompt,
@@ -1348,8 +1371,9 @@ async def _run_generation(
                     text=error_msg,
                     parse_mode="Markdown",
                 )
-            except Exception:
-                await safe_send_text(bot, chat_id, error_msg)
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    await safe_send_text(bot, chat_id, error_msg)
             return
 
         saved_path = image_storage.save_image(telegram_id, img_bytes, prefix="generated")
@@ -1628,7 +1652,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if update.callback_query and update.callback_query.data == "cancel_input":
         await update.callback_query.answer()
         session["awaiting"] = None
-        await update.callback_query.edit_message_text("❌ Ввод отменен.")
+        await safe_edit_text(update.callback_query, "❌ Ввод отменен.")
         return
 
     if context.user_data.get('awaiting_seed', False):
@@ -1714,6 +1738,10 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
 
     if "terminated by other getUpdates" in error_msg:
         log_console("BOT_CONFLICT", "Запущено несколько копий бота!")
+        return
+
+    # Подавляем "Message is not modified" на уровне глобального обработчика
+    if "Message is not modified" in error_msg:
         return
 
     log_console("GLOBAL_ERROR", "Exception", {
