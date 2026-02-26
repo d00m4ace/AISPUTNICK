@@ -1637,8 +1637,11 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             f"✅ *Изображение сохранено:* `{saved_path.name}`\n\n"
-            f"Теперь вы можете выбрать его как референс:",
-            parse_mode='Markdown',
+            f"Быстрые команды:\n"
+            f"/set_ref_{saved_path.stem} — заменить все рефы на это\n"
+            f"/add_ref_{saved_path.stem} — добавить к текущим рефам\n\n"
+            f"Или выберите через меню:",
+            parse_mode=None,
             reply_markup=keyboard
         )
     except Exception as e:
@@ -1755,6 +1758,66 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
     except:
         pass
 
+async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /set_ref_<filename> и /add_ref_<filename>."""
+    telegram_id = update.effective_user.id
+
+    if not user_manager.is_authorized(telegram_id):
+        await update.message.reply_text("❌ Доступ запрещен.")
+        return
+
+    text = update.message.text.strip()
+
+    set_match = re.match(r'^/set_ref_(.+)$', text)
+    add_match = re.match(r'^/add_ref_(.+)$', text)
+
+    if set_match:
+        filename = set_match.group(1)
+        mode = "set"
+    elif add_match:
+        filename = add_match.group(1)
+        mode = "add"
+    else:
+        await update.message.reply_text("❌ Неверный формат команды.")
+        return
+
+    user_dir = image_storage.get_user_dir(telegram_id)
+
+    # Ищем файл: сначала точное совпадение, потом с расширением .png
+    img_path = user_dir / filename
+    if not img_path.exists():
+        img_path = user_dir / (filename + ".png")
+    if not img_path.exists():
+        await update.message.reply_text(
+            f"❌ Файл `{filename}` не найден.",
+            parse_mode='Markdown',
+        )
+        return
+
+    session = get_user_session(telegram_id)
+
+    if mode == "set":
+        session["refs"] = [img_path]
+        action_text = "✅ *Референс заменён.* Теперь выбран только этот файл."
+    else:
+        if img_path not in session["refs"]:
+            session["refs"].append(img_path)
+            action_text = f"✅ *Добавлено к референсам.* Всего выбрано: `{len(session['refs'])}`"
+        else:
+            action_text = f"ℹ️ Этот файл уже есть в референсах. Всего: `{len(session['refs'])}`"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+        [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
+    ])
+
+    await update.message.reply_text(
+        f"{action_text}\n\n`{filename}`",
+        parse_mode='Markdown',
+        reply_markup=keyboard,
+    )
+
 def main():
     request = HTTPXRequest(
         connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
@@ -1784,6 +1847,9 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("download_refs", download_refs_command))
+    
+    # Быстрые команды референсов /set_ref_<filename> и /add_ref_<filename>
+    application.add_handler(MessageHandler(filters.Regex(r'^/(set|add)_ref_.+$'), quick_ref_command))    
 
     # Загрузка конфига /set_<id>
     application.add_handler(CallbackQueryHandler(load_config_command, pattern=r"^load_config_"))
