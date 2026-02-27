@@ -53,6 +53,14 @@ GEMINI_GENERATION_TIMEOUT = 600
 
 SEED_MIN = 1
 SEED_MAX = 2147483647
+# ========== Модели ==========
+MODEL_FLASH = "gemini-3.1-flash-image-preview"
+MODEL_PRO   = "gemini-3-pro-image-preview"
+
+MODEL_LABELS = {
+    MODEL_FLASH: "⚡ Flash 3.1",
+    MODEL_PRO:   "🎨 Pro 3",
+}
 # ===============================================
 
 def log_console(tag: str, message: str, data: Optional[dict] = None):
@@ -207,10 +215,10 @@ class ImageStorage:
         images = sorted(user_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
         return images[:limit]
 
+
 class GeminiImageGenerator:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.model = "gemini-3-pro-image-preview"
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
     def _sync_generate(
@@ -221,6 +229,7 @@ class GeminiImageGenerator:
         aspect_ratio: str,
         image_size: str,
         seed: int,
+        model: str = MODEL_PRO,                          # ← НОВЫЙ ПАРАМЕТР
         loop: Optional[asyncio.AbstractEventLoop] = None,
         retry_callback: Optional[Callable] = None,
     ) -> Tuple[Optional[bytes], Optional[str], int]:
@@ -239,8 +248,9 @@ class GeminiImageGenerator:
 
                 contents = [types.Content(role="user", parts=parts)]
 
-                # ФИКС: убран google_search — несовместим с IMAGE modality (вызывал MALFORMED_FUNCTION_CALL)
-                config = types.GenerateContentConfig(
+                # Базовый конфиг (общий для обеих моделей)
+                # Примечание: google_search убран — несовместим с IMAGE modality
+                config_kwargs = dict(
                     temperature=temperature,
                     response_modalities=["IMAGE", "TEXT"],
                     image_config=types.ImageConfig(
@@ -250,31 +260,39 @@ class GeminiImageGenerator:
                     seed=seed,
                 )
 
-                response = client.models.generate_content(
-                    model=self.model,
+                # Flash поддерживает ThinkingConfig
+                if model == MODEL_FLASH:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(
+                        thinking_level="MINIMAL"
+                    )
+
+                config = types.GenerateContentConfig(**config_kwargs)
+
+                # ─── Стриминг (работает для обеих моделей) ───
+                image_chunks: List[bytes] = []
+                text_parts:  List[str]   = []
+
+                for chunk in client.models.generate_content_stream(
+                    model=model,
                     contents=contents,
                     config=config,
-                )
+                ):
+                    if chunk.parts is None:
+                        continue
+                    for part in chunk.parts:
+                        if part.inline_data and part.inline_data.data:
+                            image_chunks.append(part.inline_data.data)
+                        elif hasattr(part, "text") and part.text:
+                            text_parts.append(part.text)
 
-                if not response.candidates:
-                    return None, "NO_CANDIDATES", seed
+                if image_chunks:
+                    # Склеиваем все чанки (обычно один, но на всякий случай)
+                    return b"".join(image_chunks), None, seed
 
-                candidate = response.candidates[0]
-                finish_reason = str(getattr(candidate, 'finish_reason', ''))
-
-                if "SAFETY" in finish_reason:
-                    return None, "SAFETY", seed
-                if "NO_IMAGE" in finish_reason:
-                    return None, "NO_IMAGE", seed
-
-                if not candidate.content or not candidate.content.parts:
-                    return None, f"NO_CONTENT: {finish_reason}", seed
-
-                for part in candidate.content.parts:
-                    if part.inline_data and part.inline_data.data:
-                        return part.inline_data.data, None, seed
-                    if hasattr(part, 'text') and part.text:
-                        return None, f"MODEL_RETURNED_TEXT: {part.text[:300]}", seed
+                # Модель вернула только текст — передаём его как ошибку
+                if text_parts:
+                    combined_text = " ".join(text_parts)[:300]
+                    return None, f"MODEL_RETURNED_TEXT: {combined_text}", seed
 
                 return None, "NO_IMAGE_DATA", seed
 
@@ -292,9 +310,8 @@ class GeminiImageGenerator:
                         log_console(
                             "GEMINI_503_RETRY",
                             f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s",
-                            {"error": error_str[:200], "seed": seed}
+                            {"error": error_str[:200], "seed": seed, "model": model}
                         )
-
                         if loop and retry_callback:
                             try:
                                 asyncio.run_coroutine_threadsafe(
@@ -303,7 +320,6 @@ class GeminiImageGenerator:
                                 )
                             except Exception as cb_err:
                                 log_console("RETRY_CALLBACK_ERROR", str(cb_err))
-
                         time.sleep(wait)
                         continue
 
@@ -321,12 +337,14 @@ class GeminiImageGenerator:
         aspect_ratio: str = "16:9",
         image_size: str = "1K",
         seed: int = -1,
+        model: str = MODEL_PRO,                          # ← НОВЫЙ ПАРАМЕТР
         retry_callback: Optional[Callable] = None,
     ) -> Tuple[Optional[bytes], Optional[str], int]:
         if seed <= 0:
             seed = random.randint(SEED_MIN, SEED_MAX)
 
         log_console("GEMINI_REQUEST", "Starting generation", {
+            "model": model,
             "prompt_preview": prompt[:3500],
             "num_refs": len(reference_images),
             "image_size": image_size,
@@ -347,6 +365,7 @@ class GeminiImageGenerator:
                         aspect_ratio=aspect_ratio,
                         image_size=image_size,
                         seed=seed,
+                        model=model,
                         loop=loop,
                         retry_callback=retry_callback,
                     )
@@ -357,24 +376,29 @@ class GeminiImageGenerator:
             image_data, error, used_seed = result
             if image_data:
                 log_console("GEMINI_SUCCESS", "Image generated", {
+                    "model": model,
                     "size_kb": len(image_data) // 1024,
                     "seed": used_seed
                 })
             else:
-                log_console("GEMINI_FAILED", "Generation failed", {"error": error, "seed": used_seed})
+                log_console("GEMINI_FAILED", "Generation failed", {
+                    "model": model,
+                    "error": error,
+                    "seed": used_seed
+                })
 
             return result
 
         except asyncio.TimeoutError:
-            log_console("GEMINI_TIMEOUT", "Generation timeout", {"seed": seed})
+            log_console("GEMINI_TIMEOUT", "Generation timeout", {"seed": seed, "model": model})
             return None, "TIMEOUT", seed
 
 
 # Глобальные объекты
-user_manager = UserManager(USERS_FILE)
-image_storage = ImageStorage(IMAGES_BASE_DIR)
+user_manager   = UserManager(USERS_FILE)
+image_storage  = ImageStorage(IMAGES_BASE_DIR)
 gemini_generator = GeminiImageGenerator(GEMINI_API_KEY)
-usage_tracker = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
+usage_tracker  = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
 
 user_settings: Dict[int, Dict] = {}
 user_sessions: Dict[int, Dict] = {}
@@ -389,7 +413,7 @@ def get_user_session(telegram_id: int) -> Dict:
         user_sessions[telegram_id] = {
             "prompt": "",
             "refs": [],
-            "awaiting": None
+            "awaiting": None,
         }
     return user_sessions[telegram_id]
 
@@ -502,7 +526,6 @@ def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str
 # УТИЛИТА: ресайз для Telegram (≤ 10 МБ)
 # ─────────────────────────────────────────────
 def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes:
-    """Уменьшает изображение если оно превышает лимит Telegram."""
     if len(photo_bytes) <= max_bytes:
         return photo_bytes
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
@@ -589,12 +612,9 @@ async def safe_send_photo(
         except Exception as e:
             err = str(e)
             log_console("SEND_PHOTO_ERROR", f"Attempt {attempt + 1}/{retries}", {"error": err})
-
-            # Файл слишком большой → fallback на document без дальнейших попыток
             if any(m in err for m in TOO_BIG_MARKERS):
                 log_console("SEND_PHOTO_FALLBACK", "Switching to send_document")
                 return await safe_send_document(bot, chat_id, photo_path, caption=caption)
-
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
@@ -628,8 +648,6 @@ async def safe_send_document(
         except Exception as e:
             err = str(e)
             log_console("SEND_DOCUMENT_ERROR", f"Attempt {attempt + 1}/{retries}", {"error": err})
-
-            # Файл слишком большой (лимит ~50 МБ для ботов) — повторы бессмысленны
             if any(m in err for m in TOO_BIG_MARKERS):
                 size_mb = document_path.stat().st_size // (1024 * 1024)
                 log_console("SEND_DOCUMENT_TOO_BIG", "File exceeds Telegram limit", {
@@ -642,7 +660,6 @@ async def safe_send_document(
                     parse_mode="Markdown",
                 )
                 return None
-
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
@@ -664,6 +681,27 @@ async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: i
                 raise
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send media group after {retries} retries")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# КЛАВИАТУРА ВЫБОРА МОДЕЛИ
+# Вызывается из generate_command; результат обрабатывается в model_select_callback
+# ─────────────────────────────────────────────────────────────────────────────
+def get_model_selection_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⚡ Flash 3.1  —  быстрее, думает",
+                callback_data="modelsel_flash"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🎨 Pro 3  —  качественнее",
+                callback_data="modelsel_pro"
+            ),
+        ],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cmd_status")],
+    ])
 
 # -------- Handlers --------
 
@@ -709,16 +747,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ *Параметры генерации:*\n"
         "Нажмите ⚙️ *Параметры* или используйте /settings\n"
         "— Температура, соотношение сторон, размер, seed\n\n"
-        "5️⃣ *Проверка конфигурации:*\n"
+        "5️⃣ *Выбор модели:*\n"
+        "При каждой генерации бот предложит выбрать модель:\n"
+        "  ⚡ *Flash 3.1* — быстрее, поддерживает режим «думать»\n"
+        "  🎨 *Pro 3* — более качественный результат\n\n"
+        "6️⃣ *Проверка конфигурации:*\n"
         "Нажмите 📊 *Статус* или используйте /status\n\n"
-        "6️⃣ *Генерация:*\n"
+        "7️⃣ *Генерация:*\n"
         "Нажмите ▶️ *Сгенерировать* или используйте /gen\n\n"
-        "7️⃣ *Скачать референсы:*\n"
-        "Нажмите 📥 *Скачать референсы* или используйте /download\\_refs\n"
-        "Бот отправит выбранные файлы как документы.\n\n"
+        "8️⃣ *Скачать референсы:*\n"
+        "Нажмите 📥 *Скачать референсы* или используйте /download\\_refs\n\n"
         "💾 *Сохранение конфигураций:*\n"
-        "После каждой генерации бот выдает ID конфигурации.\n"
-        "Нажмите на `/set_<id>` в сообщении для быстрой загрузки всех настроек.\n\n"
+        "После генерации бот выдаёт ID. Нажмите `/set_<id>` для быстрой загрузки.\n\n"
         "⚡ *Быстрый старт:*\n"
         "/prompt → /refs → /gen"
     )
@@ -776,7 +816,8 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
         f"📏 Размер: `{settings['image_size']}`\n"
         f"🎲 Seed: `{seed_text}`\n\n"
-        f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
+        f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.\n\n"
+        f"🤖 *Модель* выбирается перед каждой генерацией.",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -817,7 +858,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
             f"📏 Размер: `{settings['image_size']}`\n"
             f"🎲 Seed: `{seed_text}`\n\n"
-            f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.",
+            f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.\n\n"
+            f"🤖 *Модель* выбирается перед каждой генерацией.",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -949,6 +991,65 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Seed: `{seed_text}`\n\nИспользуйте /settings или /status.",
                 parse_mode='Markdown',
             )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ОБРАБОТЧИК ВЫБОРА МОДЕЛИ
+# Срабатывает по нажатию modelsel_flash / modelsel_pro
+# ─────────────────────────────────────────────────────────────────────────────
+async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    telegram_id = update.effective_user.id
+    chat_id     = update.effective_chat.id
+    data        = query.data   # "modelsel_flash" или "modelsel_pro"
+
+    if not user_manager.is_authorized(telegram_id):
+        await query.edit_message_text("❌ Доступ запрещен.")
+        return
+
+    if not usage_tracker.can_generate(telegram_id):
+        await query.edit_message_text("❌ Дневной лимит генераций исчерпан!")
+        return
+
+    model = MODEL_FLASH if data == "modelsel_flash" else MODEL_PRO
+    model_label = MODEL_LABELS[model]
+
+    session  = get_user_session(telegram_id)
+    settings = get_user_settings(telegram_id)
+    prompt   = session.get("prompt", "")
+    refs     = session.get("refs", [])
+
+    if not prompt:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]
+        ])
+        await query.edit_message_text(
+            "⚠️ *Промпт не задан!*\n\nНажмите кнопку ниже или используйте /prompt ваше описание",
+            parse_mode='Markdown',
+            reply_markup=keyboard,
+        )
+        return
+
+    # Редактируем сообщение с выбором модели → статус генерации
+    try:
+        await query.edit_message_text(
+            f"🔄 *Запуск генерации...*\n\n🤖 Модель: {model_label}",
+            parse_mode='Markdown',
+        )
+    except Exception as e:
+        if "Message is not modified" not in str(e):
+            log_console("MODEL_SELECT_EDIT_ERROR", str(e))
+
+    status_message_id = query.message.message_id
+
+    asyncio.create_task(
+        _run_generation(
+            context.bot, chat_id, telegram_id,
+            prompt, refs, settings,
+            status_message_id, model,
+        )
+    )
 
 # -------- Команды --------
 
@@ -1199,7 +1300,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🌡 Температура: `{settings['temperature']}`\n"
         f"📐 Соотношение: `{settings['aspect_ratio']}`\n"
         f"📏 Размер: `{settings['image_size']}`\n"
-        f"{seed_text}\n\n"
+        f"{seed_text}\n"
+        f"🤖 Модель: выбирается перед генерацией\n\n"
     )
 
     if prompt:
@@ -1223,9 +1325,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# generate_command — теперь только показывает выбор модели
+# ─────────────────────────────────────────────────────────────────────────────
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    chat_id = update.effective_chat.id
 
     if update.callback_query:
         await update.callback_query.answer()
@@ -1242,9 +1346,8 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     session = get_user_session(telegram_id)
-    settings = get_user_settings(telegram_id)
-
     prompt = session.get("prompt", "")
+
     if not prompt:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]
@@ -1253,18 +1356,22 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ *Промпт не задан!*\n\n"
             "Нажмите кнопку ниже или используйте /prompt ваше описание",
             parse_mode='Markdown',
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
         return
 
-    refs = session.get("refs", [])
-    start_msg = await message.reply_text("🔄 *Запуск генерации...*", parse_mode='Markdown')
+    # Предлагаем выбрать модель
+    settings = get_user_settings(telegram_id)
+    refs_count = len(session.get("refs", []))
 
-    asyncio.create_task(
-        _run_generation(
-            context.bot, chat_id, telegram_id,
-            prompt, refs, settings, start_msg.message_id
-        )
+    await message.reply_text(
+        f"🤖 *Выберите модель для генерации:*\n\n"
+        f"⚡ *Flash 3.1* — быстрее, режим «думать» (ThinkingConfig)\n"
+        f"🎨 *Pro 3* — выше качество\n\n"
+        f"📝 Промпт: `{prompt[:100]}{'...' if len(prompt) > 100 else ''}`\n"
+        f"🖼 Референсов: {refs_count}",
+        parse_mode='Markdown',
+        reply_markup=get_model_selection_keyboard(),
     )
 
 async def _run_generation(
@@ -1275,9 +1382,11 @@ async def _run_generation(
     refs_paths: List[Path],
     settings: Dict,
     status_message_id: Optional[int] = None,
+    model: str = MODEL_PRO,                              # ← НОВЫЙ ПАРАМЕТР
 ):
     start_time = datetime.now()
     config_id = generate_config_id()
+    model_label = MODEL_LABELS.get(model, model)
 
     try:
         final_prompt = (
@@ -1301,7 +1410,8 @@ async def _run_generation(
                 message_id=status_message_id,
                 text=(
                     f"🔄 *Генерация изображения...*\n\n"
-                    f"📝 Промпт: `{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`\n"
+                    f"🤖 Модель: {model_label}\n"
+                    f"📝 Промпт: `{prompt[:200]}{'...' if len(prompt) > 200 else ''}`\n"
                     f"🖼 Референсов: {len(refs_paths)}\n"
                     f"{settings_text}\n\n"
                     f"⏱ Обычно 1–5 минут\n"
@@ -1326,6 +1436,7 @@ async def _run_generation(
         AIRequestLogger.log({
             "event": "generation_start",
             "user_id": telegram_id,
+            "model": model,
             "prompt": prompt,
             "num_refs": len(ref_data),
             "settings": settings,
@@ -1339,6 +1450,7 @@ async def _run_generation(
                     message_id=status_message_id,
                     text=(
                         f"⏳ *Сервис перегружен, повторяю...*\n\n"
+                        f"🤖 Модель: {model_label}\n"
                         f"🔁 Попытка {attempt} из {max_retries}\n"
                         f"⏱ Жду {wait_sec} сек перед следующей попыткой\n\n"
                         f"📝 Промпт: `{prompt[:200]}{'...' if len(prompt) > 200 else ''}`\n\n"
@@ -1357,6 +1469,7 @@ async def _run_generation(
             aspect_ratio=settings.get("aspect_ratio", "16:9"),
             image_size=settings.get("image_size", "1K"),
             seed=seed_setting,
+            model=model,
             retry_callback=on_retry,
         )
 
@@ -1402,11 +1515,11 @@ async def _run_generation(
         try:
             await safe_send_photo(
                 bot, chat_id, preview_path,
-                caption=f"✅ Готово! ⏱{int(duration)}с",
+                caption=f"✅ Готово! {model_label} ⏱{int(duration)}с",
             )
         except Exception as e:
             log_console("SEND_PHOTO_FINAL_ERROR", str(e))
-            await safe_send_text(bot, chat_id, f"✅ Готово! ⏱{int(duration)}с (фото не удалось отправить)")
+            await safe_send_text(bot, chat_id, f"✅ Готово! {model_label} ⏱{int(duration)}с (фото не удалось отправить)")
 
         if preview_path != saved_path:
             try:
@@ -1416,6 +1529,7 @@ async def _run_generation(
 
         # 2. Мета-информация
         meta_text = (
+            f"🤖 Модель: {model_label}\n"
             f"🎲 Seed: {used_seed}\n"
             f"🖼 Референсов: {len(ref_data)}\n"
             f"⏱ Время: {int(duration)}с\n"
@@ -1443,6 +1557,7 @@ async def _run_generation(
         AIRequestLogger.log({
             "event": "generation_success",
             "user_id": telegram_id,
+            "model": model,
             "config_id": config_id,
             "seed": used_seed,
             "duration": duration,
@@ -1460,7 +1575,6 @@ async def _run_generation(
             await safe_send_text(bot, chat_id, "❌ Произошла критическая ошибка при генерации.")
 
 async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет выбранные референсы как документы (без превью)."""
     telegram_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
@@ -1489,9 +1603,7 @@ async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    status = await message.reply_text(
-        f"📤 Отправляю {len(refs)} файл(ов)...",
-    )
+    status = await message.reply_text(f"📤 Отправляю {len(refs)} файл(ов)...")
 
     sent = 0
     failed = 0
@@ -1597,6 +1709,7 @@ async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📐 Соотношение: `{loaded_settings.get('aspect_ratio')}`\n"
         f"📏 Размер: `{loaded_settings.get('image_size')}`\n"
         f"🎲 Seed: `{seed_text}`\n\n"
+        f"🤖 Модель выбирается перед запуском генерации.\n\n"
         f"Теперь можно запускать генерацию:",
         parse_mode='Markdown',
         reply_markup=keyboard
@@ -1636,7 +1749,7 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         await update.message.reply_text(
-            f"✅ *Изображение сохранено:* `{saved_path.name}`\n\n"
+            f"✅ Изображение сохранено: {saved_path.name}\n\n"
             f"Быстрые команды:\n"
             f"/set_ref_{saved_path.stem} — заменить все рефы на это\n"
             f"/add_ref_{saved_path.stem} — добавить к текущим рефам\n\n"
@@ -1743,7 +1856,6 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
         log_console("BOT_CONFLICT", "Запущено несколько копий бота!")
         return
 
-    # Подавляем "Message is not modified" на уровне глобального обработчика
     if "Message is not modified" in error_msg:
         return
 
@@ -1759,7 +1871,6 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
         pass
 
 async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /set_ref_<filename> и /add_ref_<filename>."""
     telegram_id = update.effective_user.id
 
     if not user_manager.is_authorized(telegram_id):
@@ -1783,7 +1894,6 @@ async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_dir = image_storage.get_user_dir(telegram_id)
 
-    # Ищем файл: сначала точное совпадение, потом с расширением .png
     img_path = user_dir / filename
     if not img_path.exists():
         img_path = user_dir / (filename + ".png")
@@ -1847,15 +1957,21 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("download_refs", download_refs_command))
-    
+
     # Быстрые команды референсов /set_ref_<filename> и /add_ref_<filename>
-    application.add_handler(MessageHandler(filters.Regex(r'^/(set|add)_ref_.+$'), quick_ref_command))    
+    application.add_handler(MessageHandler(filters.Regex(r'^/(set|add)_ref_.+$'), quick_ref_command))
 
     # Загрузка конфига /set_<id>
     application.add_handler(CallbackQueryHandler(load_config_command, pattern=r"^load_config_"))
     application.add_handler(MessageHandler(filters.Regex(r'^/set_[a-zA-Z0-9_]+$'), load_config_command))
 
-    # Callbacks настроек и навигации (включает cmd_download_refs)
+    # ─── НОВЫЙ ОБРАБОТЧИК: выбор модели ───────────────────────────────────────
+    application.add_handler(
+        CallbackQueryHandler(model_select_callback, pattern=r"^modelsel_(flash|pro)$")
+    )
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # Callbacks настроек и навигации
     application.add_handler(
         CallbackQueryHandler(settings_callback, pattern="^(set_|temp_|ratio_|size_|seed_|cmd_)")
     )
@@ -1875,7 +1991,7 @@ def main():
     application.add_error_handler(global_error_handler)
 
     print("=" * 60)
-    print("🤖 Gemini Image Generator Bot (Interactive)")
+    print("🤖 Gemini Image Generator Bot (Dual Model)")
     print("=" * 60)
     print(f"📊 Лимит: {DAILY_LIMIT}/день (обычный)")
     print(f"⭐ Лимит Premium: {DAILY_LIMIT_PREMIUM}/день")
@@ -1883,6 +1999,7 @@ def main():
     print(f"💎 Premium: {len(PREMIUM_USERS)}")
     print(f"⏱ Таймаут: {GEMINI_GENERATION_TIMEOUT}s")
     print(f"🎲 Seed: {SEED_MIN} - {SEED_MAX}")
+    print(f"🤖 Модели: {MODEL_FLASH} | {MODEL_PRO}")
     print("=" * 60)
 
     application.run_polling(
