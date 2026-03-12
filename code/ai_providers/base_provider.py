@@ -63,14 +63,14 @@ class BaseAIProvider(ABC):
             if response_data and isinstance(response_data, dict):
                 usage = response_data.get('usage', {})
                 
-                if provider == "openai":
-                    # Проверяем разные форматы токенов для OpenAI
+                if provider in ("openai", "openrouter"):
+                    # OpenRouter использует тот же формат, что и OpenAI
                     if 'input_tokens' in usage and 'output_tokens' in usage:
                         # Новый формат (GPT-5-Codex)
                         input_tokens = usage.get('input_tokens', 0)
                         output_tokens = usage.get('output_tokens', 0)
                     elif 'prompt_tokens' in usage and 'completion_tokens' in usage:
-                        # Старый формат (GPT-4, GPT-3.5)
+                        # Стандартный формат (GPT-4, Gemini через OpenRouter и др.)
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
                     elif 'total_tokens' in usage:

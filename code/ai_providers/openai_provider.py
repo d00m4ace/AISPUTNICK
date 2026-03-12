@@ -1,6 +1,7 @@
 ﻿# code/ai_providers/openai_provider.py
 """
-Провайдер для работы с OpenAI API через официальный SDK с поддержкой GPT-5 и GPT-5-Codex
+Провайдер для работы с OpenAI API через официальный SDK с поддержкой GPT-5 и GPT-5-Codex,
+а также OpenRouter (любые модели вида "provider/model", например "google/gemini-3-flash-preview").
 """
 
 import asyncio
@@ -17,9 +18,12 @@ from .base_provider import BaseAIProvider
 
 logger = logging.getLogger(__name__)
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DEFAULT_MODEL = "google/gemini-3-flash-preview"
+
 
 class OpenAIProvider(BaseAIProvider):
-    """Провайдер для работы с OpenAI API через официальный SDK"""
+    """Провайдер для работы с OpenAI API и OpenRouter через официальный SDK"""
     
     # Модели GPT-5 которые используют max_completion_tokens
     GPT5_MODELS = [
@@ -39,6 +43,13 @@ class OpenAIProvider(BaseAIProvider):
         "frequency_penalty", "presence_penalty", "stop", "logprobs", 
         "top_logprobs", "seed", "response_format",
         "reasoning_effort", "verbosity"  # GPT-5 additions
+    ]
+
+    # Разрешённые ключи для OpenRouter (без OpenAI-специфичных reasoning_effort/verbosity)
+    OPENROUTER_OPTIONAL_KEYS = [
+        "max_tokens", "max_completion_tokens", "temperature", "top_p",
+        "frequency_penalty", "presence_penalty", "stop", "logprobs",
+        "top_logprobs", "seed", "response_format",
     ]
     
     # Таймауты для разных моделей (в секундах)
@@ -64,6 +75,23 @@ class OpenAIProvider(BaseAIProvider):
         "gpt-4-turbo-preview": 180,
         # Старые модели
         "gpt-3.5-turbo": 60,
+        # OpenRouter — Gemini
+        "google/gemini-3-flash-preview": 120,
+        "google/gemini-2.5-flash": 120,
+        "google/gemini-2.0-flash": 120,
+        "google/gemini-2.5-pro": 300,
+        "google/gemini-2.0-pro": 300,
+        "google/gemini-pro": 300,
+        # OpenRouter — Claude
+        "anthropic/claude-opus-4": 600,
+        "anthropic/claude-sonnet-4": 300,
+        "anthropic/claude-haiku-3": 120,
+        # OpenRouter — OpenAI через прокси
+        "openai/gpt-4o": 300,
+        "openai/gpt-4o-mini": 180,
+        "openai/o3": 900,
+        "openai/o3-mini": 600,
+        "openai/gpt-5": 600,
         # По умолчанию
         "default": 120
     }
@@ -73,9 +101,9 @@ class OpenAIProvider(BaseAIProvider):
     def __init__(self, api_key: str, models_config: Dict[str, Any], providers_config: Dict[str, Any], ai_logger=None):
         """
         Инициализация провайдера
-        
+
         Args:
-            api_key: API ключ
+            api_key: OpenAI API ключ
             models_config: конфигурация моделей
             providers_config: конфигурация провайдеров
             ai_logger: логгер для AI запросов
@@ -100,6 +128,21 @@ class OpenAIProvider(BaseAIProvider):
         else:
             self.client = None
             self.http_client = None
+
+        # Инициализируем клиент OpenRouter (OpenAI-совместимый)
+        # Ключ берётся из providers_config["openrouter"]["api_key"]
+        or_api_key = providers_config.get("openrouter", {}).get("api_key", "")
+        if or_api_key:
+            self.or_client = AsyncOpenAI(
+                api_key=or_api_key,
+                base_url=OPENROUTER_BASE_URL,
+                max_retries=2,
+                timeout=120.0,
+            )
+            logger.info("OpenRouter клиент инициализирован")
+        else:
+            self.or_client = None
+            logger.debug("OpenRouter API ключ не задан, OpenRouter модели недоступны")
     
     def get_default_model(self) -> str:
         """Получение модели по умолчанию"""
@@ -118,6 +161,13 @@ class OpenAIProvider(BaseAIProvider):
             return False
         model_lower = model.lower()
         return any(resp_model in model_lower for resp_model in self.RESPONSE_MODELS)
+
+    def _is_openrouter_model(self, model: str) -> bool:
+        """
+        Проверяет, является ли модель OpenRouter-моделью.
+        OpenRouter модели всегда содержат "/" (например, "google/gemini-3-flash-preview").
+        """
+        return "/" in model if model else False
     
     def get_model_timeout(self, model: str, custom_timeout: Optional[int] = None) -> float:
         """
@@ -322,6 +372,145 @@ class OpenAIProvider(BaseAIProvider):
             logger.error(f"Ошибка при запросе к v1/responses: {e}", exc_info=True)
             return None
     
+    async def _send_openrouter_request(
+        self,
+        user_id: str,
+        messages: List[Dict[str, Any]],
+        model: str,
+        request_timeout: float,
+        extra: Dict[str, Any],
+        request_data: Dict[str, Any],
+        start_time: datetime,
+    ) -> Optional[str]:
+        """
+        Отправляет запрос к OpenRouter API (OpenAI-совместимый chat/completions).
+
+        Args:
+            user_id: ID пользователя
+            messages: список сообщений
+            model: OpenRouter модель (вида "provider/model")
+            request_timeout: таймаут в секундах
+            extra: опциональные параметры API (уже отфильтрованные)
+            request_data: данные запроса для логирования
+            start_time: время начала запроса
+        """
+        if not self.or_client:
+            raise ValueError(
+                f"OpenRouter API ключ не задан. "
+                f"Добавьте providers_config['openrouter']['api_key'] для использования модели {model}"
+            )
+
+        # Настройки reasoning из конфига провайдера/модели (по умолчанию True)
+        model_cfg = self.get_model_config("openrouter", model)
+        reasoning_enabled = model_cfg.get(
+            "reasoning_enabled",
+            self.providers_config.get("openrouter", {}).get("reasoning_enabled", True),
+        )
+        extra_body = {"reasoning": {"enabled": True}} if reasoning_enabled else None
+
+        create_params = {
+            "model": model,
+            "messages": messages,
+            "timeout": request_timeout,
+            **extra,
+        }
+        if extra_body:
+            create_params["extra_body"] = extra_body
+
+        logger.info(
+            f"Отправка запроса к OpenRouter: модель={model}, "
+            f"таймаут={request_timeout}с, reasoning={reasoning_enabled}, "
+            f"параметры={list(extra.keys())}"
+        )
+        logger.debug(f"Параметры запроса к OpenRouter: {list(create_params.keys())}")
+
+        try:
+            response: ChatCompletion = await asyncio.wait_for(
+                self.or_client.chat.completions.create(**create_params),
+                timeout=request_timeout + 10,
+            )
+
+            logger.debug(f"Получен ответ от OpenRouter: {response}")
+
+            if not response.choices:
+                logger.error(f"Пустой ответ от OpenRouter: нет choices. Response: {response}")
+                return None
+
+            result_content = response.choices[0].message.content
+            if result_content is None:
+                logger.warning(f"OpenRouter вернул None в content. Response: {response.model_dump_json()}")
+                result_content = ""
+
+            response_dict = {
+                "id": response.id,
+                "model": response.model,
+                "usage": response.usage.model_dump() if response.usage else None,
+                "choices": [
+                    {
+                        "index": choice.index,
+                        "message": {
+                            "role": choice.message.role,
+                            "content": choice.message.content,
+                        },
+                        "finish_reason": choice.finish_reason,
+                    }
+                    for choice in response.choices
+                ],
+            }
+
+            response_time = (datetime.now() - start_time).total_seconds()
+            logger.info(
+                f"Успешный ответ от OpenRouter за {response_time:.2f}с, "
+                f"длина={len(result_content)} символов"
+            )
+
+            self.log_ai_request(
+                user_id=user_id,
+                provider="openrouter",
+                model=model,
+                request_data=request_data,
+                response_data=response_dict,
+                response_time=response_time,
+                status_code=200,
+            )
+
+            return result_content
+
+        except asyncio.TimeoutError:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            error_msg = (
+                f"Таймаут при запросе к OpenRouter "
+                f"(модель: {model}, прошло: {elapsed:.2f}с из {request_timeout}с)"
+            )
+            logger.error(error_msg)
+            self.log_ai_request(
+                user_id=user_id,
+                provider="openrouter",
+                model=model,
+                request_data=request_data,
+                response_data=None,
+                response_time=elapsed,
+                status_code=0,
+                error=error_msg,
+            )
+            return None
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Ошибка при запросе к OpenRouter: {e}", exc_info=True)
+            response_time = (datetime.now() - start_time).total_seconds()
+            self.log_ai_request(
+                user_id=user_id,
+                provider="openrouter",
+                model=model,
+                request_data=request_data,
+                response_data=None,
+                response_time=response_time,
+                status_code=0,
+                error=error_msg,
+            )
+            return None
+
     async def send_request(
         self,
         user_id: str,
@@ -344,6 +533,29 @@ class OpenAIProvider(BaseAIProvider):
             raise ValueError("OpenAI API ключ не установлен")
         
         model = model or self.get_default_model()
+
+        # ── OpenRouter роутинг ──────────────────────────────────────────────
+        # Модели вида "provider/model" (например "google/gemini-3-flash-preview")
+        # отправляются через OpenRouter, не через OpenAI.
+        if self._is_openrouter_model(model):
+            request_timeout = self.get_model_timeout(model, timeout)
+            extra = self.active_model_params(
+                provider="openrouter",
+                model=model,
+                allowed_keys=self.OPENROUTER_OPTIONAL_KEYS,
+                overrides=kwargs,
+            )
+            request_data = {"model": model, "messages": messages, **extra}
+            return await self._send_openrouter_request(
+                user_id=user_id,
+                messages=messages,
+                model=model,
+                request_timeout=request_timeout,
+                extra=extra,
+                request_data=request_data,
+                start_time=datetime.now(),
+            )
+        # ── конец OpenRouter роутинга ───────────────────────────────────────
         
         # Получаем таймаут для модели
         request_timeout = self.get_model_timeout(model, timeout)

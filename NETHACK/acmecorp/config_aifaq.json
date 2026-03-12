@@ -1,5 +1,9 @@
 {
   "api_key":  "s...A",
+  
+  "openrouter_api_key": "sk-or-v1-b...c",
+  "selection_model": "google/gemini-3-flash-preview",
+  "answer_model": "google/gemini-3-flash-preview",
 
   "base_dir": "./NETHACK/acmecorp/",  
   "source_dir": "./NETHACK/acmecorp/md_files",
@@ -8,11 +12,11 @@
   "rem_reasoning_effort": "minimal, low, medium, high",
   "rem_verbosity": "low, medium, high",
   
-  "selection_model": "gpt-5.2",
+  "selection_model_": "gpt-5.2",
   "select_reasoning_effort": "low",
   "select_verbosity": "low",
 
-  "answer_model": "gpt-5.2",
+  "answer_model_": "gpt-5.2",
   "answer_reasoning_effort": "low",
   "answer_verbosity": "medium",
   

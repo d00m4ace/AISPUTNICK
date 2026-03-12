@@ -21,17 +21,21 @@
 
   "ai_models": {
     "openai": {
-      "default_model": "gpt-5.2",
+      "default_model": "google/gemini-3-flash-preview",
       "_comment": "max_tokens и temperature теперь задаются только на уровне агентов"
     },
     "anthropic": {
-      "default_model": "claude-sonnet-4-5-20250929",
+      "default_model": "anthropic/claude-sonnet-4.6",
       "_max_tokens": 2048,
       "_temperature": 1.0
     }
   },
 
   "ai_providers": {
+	  "openrouter": {
+		"api_key": "sk-or-v1-b...c",
+		"reasoning_enabled": true
+	  },
     "openai": {
       "name": "OpenAI",
       "description": "Передовые языковые модели от OpenAI",
