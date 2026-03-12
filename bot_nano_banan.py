@@ -82,7 +82,7 @@ SIMPLE_IMAGE_MODELS = {MODEL_GPT5, MODEL_SEEDREAM, MODEL_FLUX, MODEL_RIVER}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Заголовки для OpenRouter (идентификация приложения)
-OPENROUTER_APP_REFERER = "https://t.me/d...bot"
+OPENROUTER_APP_REFERER = "https://t.me/d4nanobot"
 OPENROUTER_APP_TITLE   = "Nano Image Generator"
 
 MODEL_LABELS = {
@@ -379,14 +379,12 @@ class OpenRouterImageGenerator:
         MAX_RETRIES = 5
         BASE_DELAY  = 10
 
-        # Resolve OpenRouter model ID
         openrouter_model = OPENROUTER_MODEL_MAP.get(model, model)
         headers          = self._make_headers(self.api_key)
 
         for attempt in range(MAX_RETRIES):
             try:
                 # ── Формируем сообщения ────────────────────────────────────────
-                # Промпт уже содержит системные инструкции + запрос пользователя (final_prompt)
                 if reference_images:
                     user_content: List[Dict] = []
                     for img_data in reference_images:
@@ -403,38 +401,43 @@ class OpenRouterImageGenerator:
                 ]
 
                 # ── Параметры запроса ──────────────────────────────────────────
-                payload = {
-                    "model":       openrouter_model,
-                    "messages":    messages,
-                    "temperature": temperature,
-                    "seed":        seed,
-                    "stream":      False,
-                    "modalities":  ["text", "image"],  # переопределяется ниже для image-only моделей
-                }
-
                 if model in SIMPLE_IMAGE_MODELS:
-                    payload["modalities"] = ["image"]
-                    # Для GPT-5 указываем провайдера явно
-                    if model == MODEL_GPT5:
-                        payload["provider"] = {
-                            "order":           ["OpenAI"],
-                            "allow_fallbacks": False,
-                        }
-                else:
-                    # Gemini-специфичные параметры через поле `google`
-                    google_params: Dict = {
+                    # Только image-out модели (Flux, Seedream, Riverflow, GPT-5)
+                    payload = {
+                        "model":      openrouter_model,
+                        "messages":   messages,
+                        "modalities": ["image"],
+                        "stream":     False,
+                        "seed":       seed,
                         "image_config": {
                             "aspect_ratio": aspect_ratio,
                             "image_size":   image_size,
                         },
                     }
-                    if model == MODEL_FLASH:
-                        google_params["thinking_config"] = {"thinking_level": "MINIMAL"}
+                    if model == MODEL_GPT5:
+                        payload["provider"] = {
+                            "order":           ["OpenAI"],
+                            "allow_fallbacks": False,
+                        }
 
-                    payload["google"]   = google_params
-                    payload["provider"] = {
-                        "order":           ["Google"],
-                        "allow_fallbacks": False,
+                else:
+                    # Gemini-модели: text + image out
+                    payload = {
+                        "model":        openrouter_model,
+                        "messages":     messages,
+                        "modalities":   ["image", "text"],
+                        "stream":       False,
+                        "temperature":  temperature,
+                        "seed":         seed,
+                        "max_tokens":   4096,
+                        "image_config": {
+                            "aspect_ratio": aspect_ratio,
+                            "image_size":   image_size,
+                        },
+                        "provider": {
+                            "order":           ["Google"],
+                            "allow_fallbacks": False,
+                        },
                     }
 
                 log_console("OPENROUTER_REQUEST_ATTEMPT", f"Attempt {attempt + 1}/{MAX_RETRIES}", {
@@ -442,10 +445,10 @@ class OpenRouterImageGenerator:
                     "seed":             seed,
                     "aspect_ratio":     aspect_ratio,
                     "image_size":       image_size,
+                    "image_config":     payload.get("image_config"),
                 })
 
                 # ── Запрос ────────────────────────────────────────────────────
-
                 resp = requests.post(
                     OPENROUTER_BASE_URL,
                     headers=headers,
@@ -465,6 +468,26 @@ class OpenRouterImageGenerator:
                     raise Exception(f"HTTP {resp.status_code}: {resp.text[:500]}")
 
                 body = resp.json()
+
+                # ── Проверка injected errors в choices ─────────────────────────
+                for choice in body.get("choices", []):
+                    injected = choice.get("error")
+                    if injected:
+                        code     = injected.get("code", 0)
+                        msg      = injected.get("message", "")
+                        err_type = injected.get("metadata", {}).get("error_type", "")
+                        log_console("OPENROUTER_INJECTED_ERROR", "Error injected in choice", {
+                            "code":     code,
+                            "msg":      msg,
+                            "err_type": err_type,
+                        })
+                        if code == 429 or err_type == "rate_limit_exceeded":
+                            raise Exception(f"429 RATE_LIMIT: {msg}")
+                        if code == 503 or "unavailable" in msg.lower():
+                            raise Exception(f"503 UNAVAILABLE: {msg}")
+                        raise Exception(f"HTTP {code} injected: {msg}")
+                # ──────────────────────────────────────────────────────────────
+
                 log_console("OPENROUTER_RAW_BODY", "Full response", {
                     "top_level_keys": list(body.keys()),
                     "choices_count":  len(body.get("choices", [])),
@@ -472,28 +495,46 @@ class OpenRouterImageGenerator:
                 })
 
                 image_chunks: List[bytes] = []
-                text_parts:  List[str]   = []
+                text_parts:   List[str]  = []
 
                 for i, choice in enumerate(body.get("choices", [])):
                     msg = choice.get("message", {})
+
                     log_console("OPENROUTER_CHOICE", f"Choice {i}", {
                         "finish_reason":   choice.get("finish_reason"),
                         "message_keys":    list(msg.keys()),
                         "content_type":    type(msg.get("content")).__name__,
                         "content_preview": str(msg.get("content"))[:500] if msg.get("content") else "NULL",
                         "images_raw":      str(msg.get("images"))[:1000] if msg.get("images") is not None else "MISSING",
-                        "tool_calls":      str(msg.get("tool_calls"))[:300] if msg.get("tool_calls") else "None",
                     })
 
-                    # Пробуем извлечь изображение из message (не delta)
-                    img = self._extract_image_from_delta(msg)
-                    if img:
-                        image_chunks.append(img)
-                        continue
+                    # ── Основной путь по документации: message.images ─────────
+                    # Формат: [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]
+                    images_field = msg.get("images")
+                    if images_field and isinstance(images_field, list):
+                        for item in images_field:
+                            if isinstance(item, dict):
+                                url = item.get("image_url", {}).get("url", "")
+                                if url.startswith("data:image/"):
+                                    raw = url.split(",", 1)[1]
+                                    image_chunks.append(base64.b64decode(raw))
+                        if image_chunks:
+                            continue  # изображения найдены, переходим к следующему choice
 
-                    txt = self._extract_text_from_delta(msg)
-                    if txt:
-                        text_parts.append(txt)
+                    # ── Запасной путь: message.content (список объектов) ──────
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for item in content:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "image_url":
+                                url = item.get("image_url", {}).get("url", "")
+                                if url.startswith("data:image/"):
+                                    image_chunks.append(base64.b64decode(url.split(",", 1)[1]))
+                            elif item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                    elif isinstance(content, str):
+                        text_parts.append(content)
 
                 # ── Разбираем результат ────────────────────────────────────────
                 if image_chunks:
@@ -1187,6 +1228,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("size_"):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
+        log_console("SIZE_SET", f"User {telegram_id} set image_size", {"size": size})
         await safe_edit_text(
             query,
             f"✅ Размер: `{size}`\n\nИспользуйте /settings или /status.",
