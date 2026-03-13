@@ -81,6 +81,9 @@ SIMPLE_IMAGE_MODELS = {MODEL_GPT5, MODEL_SEEDREAM, MODEL_FLUX, MODEL_RIVER}
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# https://openrouter.ai/docs/guides/overview/multimodal/image-generation
+# https://openrouter.ai/docs/guides/overview/multimodal/images
+
 # Заголовки для OpenRouter (идентификация приложения)
 OPENROUTER_APP_REFERER = "https://t.me/d4nanobot"
 OPENROUTER_APP_TITLE   = "Nano Image Generator"
