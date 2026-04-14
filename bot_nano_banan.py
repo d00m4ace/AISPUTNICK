@@ -14,7 +14,6 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Callable
 
 import concurrent.futures
-
 import requests
 
 from PIL import Image, ImageDraw, ImageFont
@@ -33,9 +32,17 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError, RetryAfter
 
+from google import genai
+from google.genai import types
+
+from openai import OpenAI
+
 # ========== Настройки ==========
-TELEGRAM_TOKEN = "7...0" 
-#GEMINI_API_KEY = "A...g" 
+TELEGRAM_TOKEN = "7...0"  
+
+GEMINI_API_KEY = "A...M"
+
+OPENAI_API_KEY = "sk-proj-W...A"
 
 OPENROUTER_API_KEY = "sk-or-v1-7...6"  # https://openrouter.ai/keys
 
@@ -45,7 +52,7 @@ USAGE_FILE = "nano_user_usage.json"
 DAILY_LIMIT = 20
 
 DAILY_LIMIT_PREMIUM = 50
-PREMIUM_USERS = ['533','226583','97328','617825']
+PREMIUM_USERS = ['11150033','111226583','11123208','1146179825']
 
 TELEGRAM_CONNECT_TIMEOUT = 60.0
 TELEGRAM_READ_TIMEOUT = 120.0
@@ -57,47 +64,41 @@ SEED_MIN = 1
 SEED_MAX = 2147483647
 
 # ========== Модели ==========
-# Внутренние идентификаторы (используются в логах, конфигах, UI)
-MODEL_FLASH    = "gemini-3.1-flash-image-preview"
-MODEL_PRO      = "gemini-3-pro-image-preview"
-MODEL_GPT5     = "gpt-5-image"
+# Google
+MODEL_FLASH = "gemini-3.1-flash-image-preview"
+MODEL_PRO   = "gemini-3-pro-image-preview"
+
+# OpenAI (Direct)
+MODEL_OPENAI_GPT = "gpt-image-1.5"
+
+# OpenRouter
 MODEL_SEEDREAM = "seedream-4.5"
 MODEL_FLUX     = "flux.2-max"
 MODEL_RIVER    = "riverflow-v2-pro"
 
 # Маппинг внутренних имён → реальные model-id на OpenRouter
-# Обновите значения если OpenRouter поменяет названия
 OPENROUTER_MODEL_MAP: Dict[str, str] = {
-    MODEL_FLASH:    "google/gemini-3.1-flash-image-preview",  # Flash: быстрее, думает
-    MODEL_PRO:      "google/gemini-3-pro-image-preview",       # Pro: выше качество
-    MODEL_GPT5:     "openai/gpt-5-image",                      # GPT-5 Image
-    MODEL_SEEDREAM: "bytedance-seed/seedream-4.5",             # Seedream 4.5
-    MODEL_FLUX:     "black-forest-labs/flux.2-max",            # FLUX.2 Max
-    MODEL_RIVER:    "sourceful/riverflow-v2-pro",              # Riverflow v2 Pro
+    MODEL_SEEDREAM: "bytedance-seed/seedream-4.5",             
+    MODEL_FLUX:     "black-forest-labs/flux.2-max",            
+    MODEL_RIVER:    "sourceful/riverflow-v2-pro",              
 }
 
-# Модели без Gemini-специфичных параметров (только modalities: image)
-SIMPLE_IMAGE_MODELS = {MODEL_GPT5, MODEL_SEEDREAM, MODEL_FLUX, MODEL_RIVER}
+# Модели OpenRouter только с text-to-image
+SIMPLE_IMAGE_MODELS = {MODEL_SEEDREAM, MODEL_FLUX, MODEL_RIVER}
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# https://openrouter.ai/docs/guides/overview/multimodal/image-generation
-# https://openrouter.ai/docs/guides/overview/multimodal/images
-
-# Заголовки для OpenRouter (идентификация приложения)
-OPENROUTER_APP_REFERER = "https://t.me/d4nanobot"
+OPENROUTER_APP_REFERER = "https://t.me/supernanobot"
 OPENROUTER_APP_TITLE   = "Nano Image Generator"
 
 MODEL_LABELS = {
-    MODEL_FLASH:    "⚡ Flash 3.1",
-    MODEL_PRO:      "🎨 Pro 3",
-    MODEL_GPT5:     "🧠 GPT-5 Image",
-    MODEL_SEEDREAM: "🌊 Seedream 4.5",
-    MODEL_FLUX:     "🌀 FLUX.2 Max",
-    MODEL_RIVER:    "🏞 Riverflow v2 Pro",
+    MODEL_FLASH:      "⚡ Flash 3.1",
+    MODEL_PRO:        "🎨 Pro 3",
+    MODEL_OPENAI_GPT: "🧠 GPT Image 1.5 (OpenAI)",
+    MODEL_SEEDREAM:   "🌊 Seedream 4.5",
+    MODEL_FLUX:       "🌀 FLUX.2 Max",
+    MODEL_RIVER:      "🏞 Riverflow v2 Pro",
 }
 # ===============================================
-
 
 def log_console(tag: str, message: str, data: Optional[dict] = None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -108,15 +109,16 @@ def log_console(tag: str, message: str, data: Optional[dict] = None):
             print(f"  {k}: {v}")
     print("=" * 50 + "\n")
 
-
 DEFAULT_SETTINGS = {
     "temperature": 1.0,
     "aspect_ratio": "16:9",
     "image_size": "1K",
-    "seed": -1,
+    "seed": -1
 }
 
-
+# ─────────────────────────────────────────────
+# УТИЛИТА: безопасное редактирование сообщения
+# ─────────────────────────────────────────────
 async def safe_edit_text(query, text: str, **kwargs):
     """Редактирует сообщение, игнорируя ошибку 'Message is not modified'."""
     try:
@@ -124,7 +126,6 @@ async def safe_edit_text(query, text: str, **kwargs):
     except Exception as e:
         if "Message is not modified" not in str(e):
             raise
-
 
 class AIRequestLogger:
     LOG_FILE = "nano_ai_requests_log.jsonl"
@@ -138,7 +139,6 @@ class AIRequestLogger:
         except Exception as e:
             print("Failed to write AIRequestLogger:", e)
 
-
 class UserManager:
     def __init__(self, users_file: str):
         self.users_file = users_file
@@ -151,7 +151,7 @@ class UserManager:
                 log_console(
                     "USERS_LOADED",
                     f"Loaded {len(users_data)} users from {self.users_file}",
-                    {"users": list(users_data.keys())},
+                    {"users": list(users_data.keys())}
                 )
                 return users_data
         except FileNotFoundError:
@@ -167,14 +167,13 @@ class UserManager:
     def get_user(self, telegram_id: int) -> Optional[Dict]:
         return self.users.get(str(telegram_id))
 
-
 class UsageTracker:
     def __init__(self, usage_file: str, daily_limit: int, premium_limit: int, premium_users: List[str]):
-        self.usage_file   = usage_file
-        self.daily_limit  = daily_limit
+        self.usage_file = usage_file
+        self.daily_limit = daily_limit
         self.premium_limit = premium_limit
         self.premium_users = premium_users
-        self.usage_data   = self.load_usage()
+        self.usage_data = self.load_usage()
 
     def get_user_limit(self, telegram_id: int) -> int:
         return self.premium_limit if str(telegram_id) in self.premium_users else self.daily_limit
@@ -195,7 +194,7 @@ class UsageTracker:
 
     def get_usage_count(self, telegram_id: int) -> int:
         user_id = str(telegram_id)
-        today   = self.get_today_date()
+        today = self.get_today_date()
         if user_id not in self.usage_data:
             return 0
         user_usage = self.usage_data[user_id]
@@ -204,19 +203,21 @@ class UsageTracker:
         return user_usage.get('count', 0)
 
     def can_generate(self, telegram_id: int) -> bool:
-        return self.get_usage_count(telegram_id) < self.get_user_limit(telegram_id)
+        user_limit = self.get_user_limit(telegram_id)
+        return self.get_usage_count(telegram_id) < user_limit
 
     def get_remaining(self, telegram_id: int) -> int:
-        return max(0, self.get_user_limit(telegram_id) - self.get_usage_count(telegram_id))
+        user_limit = self.get_user_limit(telegram_id)
+        return max(0, user_limit - self.get_usage_count(telegram_id))
 
     def increment_usage(self, telegram_id: int):
         user_id = str(telegram_id)
-        today   = self.get_today_date()
+        today = self.get_today_date()
         if user_id not in self.usage_data:
             self.usage_data[user_id] = {'date': today, 'count': 0}
         user_usage = self.usage_data[user_id]
         if user_usage.get('date') != today:
-            user_usage['date']  = today
+            user_usage['date'] = today
             user_usage['count'] = 0
         user_usage['count'] += 1
         self.save_usage()
@@ -226,7 +227,6 @@ class UsageTracker:
         if user_id in self.usage_data:
             del self.usage_data[user_id]
             self.save_usage()
-
 
 class ImageStorage:
     def __init__(self, base_dir: str):
@@ -239,132 +239,27 @@ class ImageStorage:
         return user_dir
 
     def save_image(self, telegram_id: int, image_data: bytes, prefix: str = "generated") -> Path:
-        user_dir  = self.get_user_dir(telegram_id)
+        user_dir = self.get_user_dir(telegram_id)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename  = f"{prefix}_{timestamp}.png"
-        filepath  = user_dir / filename
+        filename = f"{prefix}_{timestamp}.png"
+        filepath = user_dir / filename
         with open(filepath, 'wb') as f:
             f.write(image_data)
         return filepath
 
     def get_recent_images(self, telegram_id: int, limit: int = 20) -> List[Path]:
         user_dir = self.get_user_dir(telegram_id)
-        images   = sorted(user_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
+        images = sorted(user_dir.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True)
         return images[:limit]
 
 
 # =============================================================================
-# OpenRouter Image Generator
-# Замена GeminiImageGenerator — сохраняет 100% того же публичного интерфейса
+# Google API Image Generator
 # =============================================================================
-
-class OpenRouterImageGenerator:
-    """
-    Генерирует изображения через OpenRouter API (OpenAI-совместимый endpoint).
-
-    Поддерживает:
-    - Потоковые (streaming) ответы
-    - Референсные изображения (base64 image_url)
-    - Параметры Gemini: aspect_ratio, image_size, seed, ThinkingConfig (Flash)
-    - Автоматический retry при 503 / перегрузке
-    """
-
+class GeminiImageGenerator:
     def __init__(self, api_key: str):
-        self.api_key  = api_key
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-
-    # ------------------------------------------------------------------
-    # Вспомогательные методы
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_headers() -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {OpenRouterImageGenerator._api_key_holder}",
-            "Content-Type":  "application/json",
-            "HTTP-Referer":  OPENROUTER_APP_REFERER,
-            "X-Title":       OPENROUTER_APP_TITLE,
-        }
-
-    @staticmethod
-    def _make_headers(api_key: str) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-            "HTTP-Referer":  OPENROUTER_APP_REFERER,
-            "X-Title":       OPENROUTER_APP_TITLE,
-        }
-
-    @staticmethod
-    def _encode_image(img_data: bytes) -> str:
-        """Кодирует байты изображения в data-URI base64 (PNG)."""
-        return "data:image/png;base64," + base64.b64encode(img_data).decode("utf-8")
-
-    @staticmethod
-    def _extract_image_from_delta(delta: dict) -> Optional[bytes]:
-        # Формат OpenRouter: поле 'images' — список {type: image_url, image_url: {url: data:...}}
-        images = delta.get("images")
-        if images and isinstance(images, list):
-            for item in images:
-                if isinstance(item, dict):
-                    url = item.get("image_url", {}).get("url", "")
-                    if url.startswith("data:image/"):
-                        return base64.b64decode(url.split(",", 1)[1])
-                elif isinstance(item, str) and len(item) > 256:
-                    try:
-                        return base64.b64decode(item)
-                    except Exception:
-                        pass
-
-        content = delta.get("content")
-        if not content:
-            return None
-
-        # Формат: список объектов
-        if isinstance(content, list):
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "image_url":
-                    url = item.get("image_url", {}).get("url", "")
-                    if url.startswith("data:image/"):
-                        raw = url.split(",", 1)[1]
-                        return base64.b64decode(raw)
-                if item.get("type") == "inline_data":
-                    raw = item.get("data", "")
-                    if raw:
-                        return base64.b64decode(raw)
-            return None
-
-        # Формат: строка — может быть чистым base64
-        if isinstance(content, str) and len(content) > 256:
-            try:
-                decoded = base64.b64decode(content)
-                if decoded[:4] in (b'\x89PNG', b'\xff\xd8\xff'):
-                    return decoded
-            except Exception:
-                pass
-
-        return None
-
-    @staticmethod
-    def _extract_text_from_delta(delta: dict) -> str:
-        content = delta.get("content")
-        if not content:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(item.get("text", ""))
-            return "".join(parts)
-        return ""
-
-    # ------------------------------------------------------------------
-    # Синхронная генерация (запускается в ThreadPoolExecutor)
-    # ------------------------------------------------------------------
+        self.api_key = api_key
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def _sync_generate(
         self,
@@ -380,14 +275,387 @@ class OpenRouterImageGenerator:
     ) -> Tuple[Optional[bytes], Optional[str], int]:
 
         MAX_RETRIES = 5
-        BASE_DELAY  = 10
+        BASE_DELAY = 120
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                client = genai.Client(api_key=self.api_key)
+
+                parts = []
+                for img_data in reference_images:
+                    parts.append(types.Part.from_bytes(mime_type="image/png", data=img_data))
+                parts.append(types.Part.from_text(text=prompt))
+
+                contents = [types.Content(role="user", parts=parts)]
+
+                config_kwargs = dict(
+                    temperature=temperature,
+                    response_modalities=["IMAGE", "TEXT"],
+                    image_config=types.ImageConfig(
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                    ),
+                    seed=seed,
+                )
+
+                if model == MODEL_FLASH:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(
+                        thinking_level="MINIMAL"
+                    )
+
+                config = types.GenerateContentConfig(**config_kwargs)
+
+                image_chunks: List[bytes] = []
+                text_parts:  List[str]   = []
+
+                for chunk in client.models.generate_content_stream(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                ):
+                    if chunk.parts is None:
+                        continue
+                    for part in chunk.parts:
+                        if part.inline_data and part.inline_data.data:
+                            image_chunks.append(part.inline_data.data)
+                        elif hasattr(part, "text") and part.text:
+                            text_parts.append(part.text)
+
+                if image_chunks:
+                    return b"".join(image_chunks), None, seed
+
+                if text_parts:
+                    combined_text = " ".join(text_parts)[:300]
+                    return None, f"MODEL_RETURNED_TEXT: {combined_text}", seed
+
+                return None, "NO_IMAGE_DATA", seed
+
+            except ValueError as e:
+                if "Chunk too big" in str(e):
+                    return None, "CHUNK_TOO_BIG", seed
+                return None, f"ERROR: {str(e)}", seed
+
+            except Exception as e:
+                error_str = str(e)
+
+                if "503" in error_str or "UNAVAILABLE" in error_str or "high demand" in error_str:
+                    if attempt < MAX_RETRIES - 1:
+                        wait = min(BASE_DELAY * (2 ** min(attempt, 1)), 130)
+                        log_console(
+                            "GEMINI_503_RETRY",
+                            f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s",
+                            {"error": error_str[:200], "seed": seed, "model": model}
+                        )
+                        if loop and retry_callback:
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    retry_callback(attempt + 1, MAX_RETRIES, wait),
+                                    loop
+                                )
+                            except Exception as cb_err:
+                                log_console("RETRY_CALLBACK_ERROR", str(cb_err))
+                        time.sleep(wait)
+                        continue
+
+                    return None, f"ERROR_503_EXHAUSTED after {MAX_RETRIES} attempts: {error_str}", seed
+
+                return None, f"ERROR: {error_str}", seed
+
+        return None, "MAX_RETRIES_EXHAUSTED", seed
+
+    async def generate_image(
+        self,
+        prompt: str,
+        reference_images: List[bytes],
+        temperature: float = 1.0,
+        aspect_ratio: str = "16:9",
+        image_size: str = "1K",
+        seed: int = -1,
+        model: str = MODEL_PRO,
+        retry_callback: Optional[Callable] = None,
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
+        if seed <= 0:
+            seed = random.randint(SEED_MIN, SEED_MAX)
+
+        log_console("GEMINI_REQUEST", "Starting Google generation", {
+            "model": model,
+            "prompt_preview": prompt[:3500],
+            "num_refs": len(reference_images),
+            "image_size": image_size,
+            "seed": seed,
+        })
+
+        loop = asyncio.get_event_loop()
+
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    self.executor,
+                    functools.partial(
+                        self._sync_generate,
+                        prompt=prompt,
+                        reference_images=reference_images,
+                        temperature=temperature,
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                        seed=seed,
+                        model=model,
+                        loop=loop,
+                        retry_callback=retry_callback,
+                    )
+                ),
+                timeout=GEMINI_GENERATION_TIMEOUT
+            )
+
+            image_data, error, used_seed = result
+            if image_data:
+                log_console("GEMINI_SUCCESS", "Image generated", {
+                    "model": model,
+                    "size_kb": len(image_data) // 1024,
+                    "seed": used_seed
+                })
+            else:
+                log_console("GEMINI_FAILED", "Generation failed", {
+                    "model": model,
+                    "error": error,
+                    "seed": used_seed
+                })
+
+            return result
+
+        except asyncio.TimeoutError:
+            log_console("GEMINI_TIMEOUT", "Generation timeout", {"seed": seed, "model": model})
+            return None, "TIMEOUT", seed
+
+
+# =============================================================================
+# OpenAI Direct Image Generator (Raw HTTP with Dynamic Base URL)
+# =============================================================================
+class OpenAIImageGenerator:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        # Инициализируем клиент ТОЛЬКО для того, чтобы подхватить ваш кастомный Base URL из окружения
+        self.client = OpenAI(api_key=self.api_key)
+        # Извлекаем базовый URL провайдера (убираем слэш на конце для удобства)
+        self.base_url = str(self.client.base_url).rstrip('/')
+
+    def _sync_generate(
+        self,
+        prompt: str,
+        reference_images: List[bytes],
+        temperature: float,
+        aspect_ratio: str,
+        image_size: str,
+        seed: int,
+        model: str = MODEL_OPENAI_GPT,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        retry_callback: Optional[Callable] = None,
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
+
+        MAX_RETRIES = 5
+        BASE_DELAY = 120
+
+        # Разрешения под вашу документацию
+        if aspect_ratio in ["16:9", "3:2", "4:3", "21:9"]:
+            size = "1536x1024"
+            ratio_prompt = "landscape (16:9)"
+        elif aspect_ratio in ["9:16", "2:3", "3:4", "4:5"]:
+            size = "1024x1536"
+            ratio_prompt = "portrait (9:16)"
+        else:
+            size = "1024x1024"
+            ratio_prompt = "square (1:1)"
+
+        final_prompt = prompt + f"\n\n[CRITICAL: You MUST generate this image in {ratio_prompt} format.]"
+        if len(final_prompt) > 4000:
+            final_prompt = final_prompt[:3900] + f" [Format: {ratio_prompt}]"
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                log_console("OPENAI_REQUEST_ATTEMPT", f"Attempt {attempt + 1}/{MAX_RETRIES}", {
+                    "model": model,
+                    "size": size,
+                    "has_refs": bool(reference_images),
+                    "num_refs": len(reference_images),
+                    "target_url": self.base_url
+                })
+
+                if reference_images:
+                    # --- Использование референсов: точная копия вашего CURL ---
+                    url = f"{self.base_url}/images/edits"
+                    headers = {"Authorization": f"Bearer {self.api_key}"}
+                    
+                    # Собираем файлы с ключом "image[]" (в точности как в -F "image[]=@...")
+                    files = []
+                    for idx, img_bytes in enumerate(reference_images):
+                        files.append(("image[]", (f"ref_{idx}.png", img_bytes, "image/png")))
+                        
+                    data = {
+                        "model": model,
+                        "prompt": final_prompt,
+                        "n": 1,
+                        "size": size
+                    }
+                    
+                    resp = requests.post(url, headers=headers, data=data, files=files, timeout=GEMINI_GENERATION_TIMEOUT)
+                    
+                else:
+                    # --- Обычная генерация (Text-to-Image) ---
+                    url = f"{self.base_url}/images/generations"
+                    headers = {
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    payload = {
+                        "model": model,
+                        "prompt": final_prompt,
+                        "n": 1,
+                        "size": size
+                    }
+                    
+                    resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_GENERATION_TIMEOUT)
+
+                # Проверка статуса ответа
+                if resp.status_code not in [200, 201]:
+                    raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                    
+                body = resp.json()
+                item = body.get("data", [{}])[0]
+                
+                # Ищем Base64 (как в вашем jq скрипте)
+                b64_data = item.get("b64_json")
+                if b64_data:
+                    return base64.b64decode(b64_data), None, seed
+                    
+                # Подстраховка: если провайдер вернул URL вместо Base64
+                img_url = item.get("url")
+                if img_url:
+                    log_console("OPENAI_DOWNLOADING", f"Fetching image from URL...")
+                    img_resp = requests.get(img_url, timeout=GEMINI_GENERATION_TIMEOUT)
+                    if img_resp.status_code == 200:
+                        return img_resp.content, None, seed
+                    else:
+                        return None, f"DOWNLOAD_ERROR: HTTP {img_resp.status_code}", seed
+
+                return None, f"NO_IMAGE_DATA_IN_RESPONSE: {str(body)[:300]}", seed
+
+            except Exception as e:
+                error_str = str(e)
+                is_overload = any(x in error_str for x in ["503", "429", "502", "500", "Rate limit"])
+                
+                if is_overload and attempt < MAX_RETRIES - 1:
+                    wait = min(BASE_DELAY * (2 ** min(attempt, 1)), 130)
+                    log_console("OPENAI_RETRY", f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s", {"error": error_str[:200]})
+                    if loop and retry_callback:
+                        try:
+                            asyncio.run_coroutine_threadsafe(retry_callback(attempt + 1, MAX_RETRIES, wait), loop)
+                        except Exception:
+                            pass
+                    time.sleep(wait)
+                    continue
+
+                return None, f"ERROR: {error_str}", seed
+
+        return None, "MAX_RETRIES_EXHAUSTED", seed
+
+    async def generate_image(
+        self,
+        prompt: str,
+        reference_images: List[bytes],
+        temperature: float = 1.0,
+        aspect_ratio: str = "16:9",
+        image_size: str = "1K",
+        seed: int = -1,
+        model: str = MODEL_OPENAI_GPT,
+        retry_callback: Optional[Callable] = None,
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
+        
+        if seed <= 0:
+            seed = random.randint(SEED_MIN, SEED_MAX)
+
+        log_console("OPENAI_REQUEST", "Starting Custom HTTP generation", {
+            "model": model,
+            "image_size": image_size,
+            "aspect_ratio": aspect_ratio,
+            "num_refs": len(reference_images)
+        })
+
+        loop = asyncio.get_event_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    self.executor,
+                    functools.partial(
+                        self._sync_generate,
+                        prompt=prompt,
+                        reference_images=reference_images,
+                        temperature=temperature,
+                        aspect_ratio=aspect_ratio,
+                        image_size=image_size,
+                        seed=seed,
+                        model=model,
+                        loop=loop,
+                        retry_callback=retry_callback,
+                    ),
+                ),
+                timeout=GEMINI_GENERATION_TIMEOUT,
+            )
+            
+            image_data, error, used_seed = result
+            if image_data:
+                log_console("OPENAI_SUCCESS", "Image generated", {"size_kb": len(image_data) // 1024})
+            else:
+                log_console("OPENAI_FAILED", "Generation failed", {"error": error})
+                
+            return result
+
+        except asyncio.TimeoutError:
+            log_console("OPENAI_TIMEOUT", "Generation timeout", {"model": model})
+            return None, "TIMEOUT", seed
+# =============================================================================
+# OpenRouter Image Generator
+# =============================================================================
+class OpenRouterImageGenerator:
+    def __init__(self, api_key: str):
+        self.api_key  = api_key
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+    @staticmethod
+    def _make_headers(api_key: str) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+            "HTTP-Referer":  OPENROUTER_APP_REFERER,
+            "X-Title":       OPENROUTER_APP_TITLE,
+        }
+
+    @staticmethod
+    def _encode_image(img_data: bytes) -> str:
+        return "data:image/png;base64," + base64.b64encode(img_data).decode("utf-8")
+
+    def _sync_generate(
+        self,
+        prompt: str,
+        reference_images: List[bytes],
+        temperature: float,
+        aspect_ratio: str,
+        image_size: str,
+        seed: int,
+        model: str,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        retry_callback: Optional[Callable] = None,
+    ) -> Tuple[Optional[bytes], Optional[str], int]:
+
+        MAX_RETRIES = 5
+        BASE_DELAY  = 120
 
         openrouter_model = OPENROUTER_MODEL_MAP.get(model, model)
         headers          = self._make_headers(self.api_key)
 
         for attempt in range(MAX_RETRIES):
             try:
-                # ── Формируем сообщения ────────────────────────────────────────
                 if reference_images:
                     user_content: List[Dict] = []
                     for img_data in reference_images:
@@ -403,28 +671,31 @@ class OpenRouterImageGenerator:
                     {"role": "user", "content": user_content},
                 ]
 
-                # ── Параметры запроса ──────────────────────────────────────────
                 if model in SIMPLE_IMAGE_MODELS:
-                    # Только image-out модели (Flux, Seedream, Riverflow, GPT-5)
                     payload = {
                         "model":      openrouter_model,
                         "messages":   messages,
                         "modalities": ["image"],
                         "stream":     False,
                         "seed":       seed,
-                        "image_config": {
-                            "aspect_ratio": aspect_ratio,
-                            "image_size":   image_size,
-                        },
                     }
-                    if model == MODEL_GPT5:
-                        payload["provider"] = {
-                            "order":           ["OpenAI"],
-                            "allow_fallbacks": False,
-                        }
-
+                    
+                    w, h = 1024, 1024
+                    if aspect_ratio == "16:9": w, h = 1024, 576
+                    elif aspect_ratio == "9:16": w, h = 576, 1024
+                    elif aspect_ratio == "4:3": w, h = 1024, 768
+                    elif aspect_ratio == "3:4": w, h = 768, 1024
+                    elif aspect_ratio == "3:2": w, h = 1024, 680
+                    elif aspect_ratio == "2:3": w, h = 680, 1024
+                    elif aspect_ratio == "21:9": w, h = 1024, 440
+                    
+                    multiplier = 1.0
+                    if image_size == "2K": multiplier = 1.5
+                    elif image_size == "4K": multiplier = 2.0
+                    
+                    payload["width"] = int((w * multiplier) // 32 * 32)
+                    payload["height"] = int((h * multiplier) // 32 * 32)
                 else:
-                    # Gemini-модели: text + image out
                     payload = {
                         "model":        openrouter_model,
                         "messages":     messages,
@@ -433,10 +704,6 @@ class OpenRouterImageGenerator:
                         "temperature":  temperature,
                         "seed":         seed,
                         "max_tokens":   4096,
-                        "image_config": {
-                            "aspect_ratio": aspect_ratio,
-                            "image_size":   image_size,
-                        },
                         "provider": {
                             "order":           ["Google"],
                             "allow_fallbacks": False,
@@ -447,11 +714,10 @@ class OpenRouterImageGenerator:
                     "openrouter_model": openrouter_model,
                     "seed":             seed,
                     "aspect_ratio":     aspect_ratio,
-                    "image_size":       image_size,
-                    "image_config":     payload.get("image_config"),
+                    "payload_width":    payload.get("width"),
+                    "payload_height":   payload.get("height"),
                 })
 
-                # ── Запрос ────────────────────────────────────────────────────
                 resp = requests.post(
                     OPENROUTER_BASE_URL,
                     headers=headers,
@@ -472,30 +738,17 @@ class OpenRouterImageGenerator:
 
                 body = resp.json()
 
-                # ── Проверка injected errors в choices ─────────────────────────
                 for choice in body.get("choices", []):
                     injected = choice.get("error")
                     if injected:
                         code     = injected.get("code", 0)
                         msg      = injected.get("message", "")
                         err_type = injected.get("metadata", {}).get("error_type", "")
-                        log_console("OPENROUTER_INJECTED_ERROR", "Error injected in choice", {
-                            "code":     code,
-                            "msg":      msg,
-                            "err_type": err_type,
-                        })
                         if code == 429 or err_type == "rate_limit_exceeded":
                             raise Exception(f"429 RATE_LIMIT: {msg}")
                         if code == 503 or "unavailable" in msg.lower():
                             raise Exception(f"503 UNAVAILABLE: {msg}")
                         raise Exception(f"HTTP {code} injected: {msg}")
-                # ──────────────────────────────────────────────────────────────
-
-                log_console("OPENROUTER_RAW_BODY", "Full response", {
-                    "top_level_keys": list(body.keys()),
-                    "choices_count":  len(body.get("choices", [])),
-                    "body":           json.dumps(body, ensure_ascii=False)[:8000],
-                })
 
                 image_chunks: List[bytes] = []
                 text_parts:   List[str]  = []
@@ -503,16 +756,6 @@ class OpenRouterImageGenerator:
                 for i, choice in enumerate(body.get("choices", [])):
                     msg = choice.get("message", {})
 
-                    log_console("OPENROUTER_CHOICE", f"Choice {i}", {
-                        "finish_reason":   choice.get("finish_reason"),
-                        "message_keys":    list(msg.keys()),
-                        "content_type":    type(msg.get("content")).__name__,
-                        "content_preview": str(msg.get("content"))[:500] if msg.get("content") else "NULL",
-                        "images_raw":      str(msg.get("images"))[:1000] if msg.get("images") is not None else "MISSING",
-                    })
-
-                    # ── Основной путь по документации: message.images ─────────
-                    # Формат: [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]
                     images_field = msg.get("images")
                     if images_field and isinstance(images_field, list):
                         for item in images_field:
@@ -522,9 +765,8 @@ class OpenRouterImageGenerator:
                                     raw = url.split(",", 1)[1]
                                     image_chunks.append(base64.b64decode(raw))
                         if image_chunks:
-                            continue  # изображения найдены, переходим к следующему choice
+                            continue
 
-                    # ── Запасной путь: message.content (список объектов) ──────
                     content = msg.get("content")
                     if isinstance(content, list):
                         for item in content:
@@ -539,7 +781,6 @@ class OpenRouterImageGenerator:
                     elif isinstance(content, str):
                         text_parts.append(content)
 
-                # ── Разбираем результат ────────────────────────────────────────
                 if image_chunks:
                     return b"".join(image_chunks), None, seed
 
@@ -551,14 +792,13 @@ class OpenRouterImageGenerator:
 
             except Exception as e:
                 error_str = str(e)
-
                 is_overload = any(
                     marker in error_str
                     for marker in ("503", "UNAVAILABLE", "high demand", "overloaded", "429", "RATE_LIMIT")
                 )
 
                 if is_overload and attempt < MAX_RETRIES - 1:
-                    wait = BASE_DELAY * (2 ** min(attempt, 5))
+                    wait = min(BASE_DELAY * (2 ** min(attempt, 1)), 130)
                     log_console(
                         "OPENROUTER_RETRY",
                         f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s",
@@ -582,10 +822,6 @@ class OpenRouterImageGenerator:
 
         return None, "MAX_RETRIES_EXHAUSTED", seed
 
-    # ------------------------------------------------------------------
-    # Async-обёртка (публичный интерфейс — идентичен оригиналу)
-    # ------------------------------------------------------------------
-
     async def generate_image(
         self,
         prompt: str,
@@ -594,14 +830,14 @@ class OpenRouterImageGenerator:
         aspect_ratio: str  = "16:9",
         image_size: str    = "1K",
         seed: int          = -1,
-        model: str         = MODEL_PRO,
+        model: str         = MODEL_SEEDREAM,
         retry_callback: Optional[Callable] = None,
     ) -> Tuple[Optional[bytes], Optional[str], int]:
 
         if seed <= 0:
             seed = random.randint(SEED_MIN, SEED_MAX)
 
-        log_console("OPENROUTER_REQUEST", "Starting generation", {
+        log_console("OPENROUTER_REQUEST", "Starting OpenRouter generation", {
             "internal_model":   model,
             "openrouter_model": OPENROUTER_MODEL_MAP.get(model, model),
             "prompt_preview":   prompt[:3500],
@@ -657,59 +893,53 @@ class OpenRouterImageGenerator:
 # =============================================================================
 # Глобальные объекты
 # =============================================================================
+user_manager   = UserManager(USERS_FILE)
+image_storage  = ImageStorage(IMAGES_BASE_DIR)
+usage_tracker  = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
 
-user_manager     = UserManager(USERS_FILE)
-image_storage    = ImageStorage(IMAGES_BASE_DIR)
-gemini_generator = OpenRouterImageGenerator(OPENROUTER_API_KEY)   # имя сохранено для совместимости
-usage_tracker    = UsageTracker(USAGE_FILE, DAILY_LIMIT, DAILY_LIMIT_PREMIUM, PREMIUM_USERS)
+# Инициализируем генераторы
+gemini_generator = GeminiImageGenerator(GEMINI_API_KEY)
+openai_generator = OpenAIImageGenerator(OPENAI_API_KEY)
+openrouter_generator = OpenRouterImageGenerator(OPENROUTER_API_KEY)
 
 user_settings: Dict[int, Dict] = {}
 user_sessions: Dict[int, Dict] = {}
-
 
 def get_user_settings(telegram_id: int) -> Dict:
     if telegram_id not in user_settings:
         user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
     return user_settings[telegram_id]
 
-
 def get_user_session(telegram_id: int) -> Dict:
     if telegram_id not in user_sessions:
         user_sessions[telegram_id] = {
-            "prompt":   "",
-            "refs":     [],
+            "prompt": "",
+            "refs": [],
             "awaiting": None,
         }
     return user_sessions[telegram_id]
 
-
 def generate_config_id() -> str:
     return str(uuid.uuid4()).replace('-', '_')[:16]
 
-
-def save_generation_config(
-    telegram_id: int,
-    config_id: str,
-    prompt: str,
-    settings: Dict,
-    refs: List[Path],
-):
-    user_dir    = image_storage.get_user_dir(telegram_id)
+def save_generation_config(telegram_id: int, config_id: str, prompt: str, settings: Dict, refs: List[Path]):
+    user_dir = image_storage.get_user_dir(telegram_id)
     config_path = user_dir / f"set_{config_id}.json"
 
     rel_refs = []
     for ref in refs:
         try:
-            rel_refs.append(str(ref.relative_to(user_dir)))
+            rel_path = str(ref.relative_to(user_dir))
+            rel_refs.append(rel_path)
         except ValueError:
             rel_refs.append(str(ref))
 
     config_data = {
-        "id":         config_id,
-        "timestamp":  datetime.now().isoformat(),
-        "prompt":     prompt,
-        "settings":   settings.copy(),
-        "references": rel_refs,
+        "id": config_id,
+        "timestamp": datetime.now().isoformat(),
+        "prompt": prompt,
+        "settings": settings.copy(),
+        "references": rel_refs
     }
 
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -717,9 +947,8 @@ def save_generation_config(
 
     log_console("CONFIG_SAVED", f"Saved config {config_id}", {"path": str(config_path)})
 
-
 def load_generation_config(telegram_id: int, config_id: str) -> Optional[Dict]:
-    user_dir    = image_storage.get_user_dir(telegram_id)
+    user_dir = image_storage.get_user_dir(telegram_id)
     config_path = user_dir / f"set_{config_id}.json"
 
     if not config_path.exists():
@@ -737,60 +966,55 @@ def load_generation_config(telegram_id: int, config_id: str) -> Optional[Dict]:
     data["references"] = valid_refs
     return data
 
-
 def create_numbered_preview_jpg(img_path: Path, number: int, max_size=(600, 600)) -> str:
     img = Image.open(img_path).convert("RGB")
     img.thumbnail(max_size, Image.LANCZOS)
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    radius   = int(min(w, h) * 0.08)
+    radius = int(min(w, h) * 0.08)
     circle_x = radius + 20
     circle_y = radius + 20
-    draw.ellipse(
-        (circle_x - radius, circle_y - radius, circle_x + radius, circle_y + radius),
-        fill=(0, 0, 0),
-    )
+    draw.ellipse((circle_x - radius, circle_y - radius, circle_x + radius, circle_y + radius), fill=(0, 0, 0))
     font_size = int(radius * 1.4)
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
-    except Exception:
+    except:
         font = ImageFont.load_default()
     text = str(number)
     bbox = draw.textbbox((0, 0), text, font=font)
-    tw   = bbox[2] - bbox[0]
-    th   = bbox[3] - bbox[1]
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
     draw.text((circle_x - tw / 2, circle_y - th / 2), text, fill=(255, 255, 255), font=font)
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
     img.save(temp_file.name, "JPEG", quality=85)
     return temp_file.name
 
-
 def get_main_menu_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📝 Промпт",    callback_data="cmd_prompt"),
+            InlineKeyboardButton("📝 Промпт", callback_data="cmd_prompt"),
             InlineKeyboardButton("🖼 Референсы", callback_data="cmd_refs"),
         ],
         [
             InlineKeyboardButton("⚙️ Настройки", callback_data="cmd_settings"),
-            InlineKeyboardButton("📊 Статус",     callback_data="cmd_status"),
+            InlineKeyboardButton("📊 Статус", callback_data="cmd_status"),
         ],
-        [InlineKeyboardButton("▶️ Сгенерировать",        callback_data="cmd_generate")],
-        [InlineKeyboardButton("📥 Скачать референсы",    callback_data="cmd_download_refs")],
+        [
+            InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate"),
+        ],
+        [
+            InlineKeyboardButton("📥 Скачать референсы", callback_data="cmd_download_refs"),
+        ],
     ])
 
-
 def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str:
-    temp_emoji = (
-        "🔥" if settings['temperature'] > 0.7
-        else "❄️" if settings['temperature'] < 0.4
-        else "🌡"
-    )
+    temp_emoji = "🔥" if settings['temperature'] > 0.7 else "❄️" if settings['temperature'] < 0.4 else "🌡"
+
     if used_seed is not None:
         seed_text = str(used_seed)
     else:
         seed_value = settings.get('seed', -1)
-        seed_text  = "авто" if seed_value <= 0 else str(seed_value)
+        seed_text = "авто" if seed_value <= 0 else str(seed_value)
 
     return (
         f"⚙️ Параметры:\n"
@@ -800,18 +1024,16 @@ def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str
         f"  🎲 Seed: {seed_text}"
     )
 
-
 def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes:
     if len(photo_bytes) <= max_bytes:
         return photo_bytes
-    img     = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
     quality = 85
-    scale   = 1.0
+    scale = 1.0
     while True:
         if scale < 1.0:
-            w, h   = img.size
-            new_w  = int(w * scale)
-            new_h  = int(h * scale)
+            w, h = img.size
+            new_w, new_h = int(w * scale), int(h * scale)
             resized = img.resize((new_w, new_h), Image.LANCZOS)
         else:
             resized = img
@@ -819,10 +1041,10 @@ def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes
         resized.save(buf, "JPEG", quality=quality)
         data = buf.getvalue()
         if len(data) <= max_bytes:
-            log_console("RESIZE_IMAGE", f"Resized to {len(data) // 1024} KB", {
-                "original_kb": len(photo_bytes) // 1024,
-                "scale":       scale,
-                "quality":     quality,
+            log_console("RESIZE_IMAGE", f"Resized to {len(data)//1024} KB", {
+                "original_kb": len(photo_bytes)//1024,
+                "scale": scale,
+                "quality": quality,
             })
             return data
         if quality > 60:
@@ -832,55 +1054,28 @@ def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes
         if scale < 0.1:
             return data
 
-
-# ─── Утилиты отправки сообщений ──────────────────────────────────────────────
-
-async def safe_send_text(
-    bot,
-    chat_id: int,
-    text: str,
-    retries: int = 5,
-    parse_mode: str = 'Markdown',
-    reply_markup=None,
-):
+async def safe_send_text(bot, chat_id: int, text: str, retries: int = 5, parse_mode: str = 'Markdown', reply_markup=None):
     for attempt in range(retries):
         try:
-            return await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
+            return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
         except TimedOut:
             await asyncio.sleep(min(2 ** attempt, 30))
         except NetworkError:
             await asyncio.sleep(min(2 ** attempt, 30))
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after if hasattr(e, "retry_after") else 5)
-        except Exception:
+        except Exception as e:
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send text after {retries} retries")
 
-
-async def safe_send_photo(
-    bot,
-    chat_id: int,
-    photo_path: Path,
-    caption: Optional[str] = None,
-    retries: int = 5,
-):
+async def safe_send_photo(bot, chat_id: int, photo_path: Path, caption: Optional[str] = None, retries: int = 5):
     TOO_BIG_MARKERS = ("too big", "PHOTO_SAVE_FILE_INVALID", "wrong file identifier")
     for attempt in range(retries):
         try:
             with open(photo_path, "rb") as f:
-                return await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=f,
-                    caption=caption,
-                    parse_mode="Markdown",
-                )
+                return await bot.send_photo(chat_id=chat_id, photo=f, caption=caption, parse_mode="Markdown")
         except TimedOut:
             await asyncio.sleep(min(2 ** attempt, 30))
         except NetworkError:
@@ -898,24 +1093,12 @@ async def safe_send_photo(
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send photo after {retries} retries")
 
-
-async def safe_send_document(
-    bot,
-    chat_id: int,
-    document_path: Path,
-    caption: Optional[str] = None,
-    retries: int = 5,
-):
+async def safe_send_document(bot, chat_id: int, document_path: Path, caption: Optional[str] = None, retries: int = 5):
     TOO_BIG_MARKERS = ("too big", "FILE_PART", "file is too big", "Request Entity Too Large")
     for attempt in range(retries):
         try:
             with open(document_path, "rb") as f:
-                return await bot.send_document(
-                    chat_id=chat_id,
-                    document=f,
-                    caption=caption,
-                    filename=document_path.name,
-                )
+                return await bot.send_document(chat_id=chat_id, document=f, caption=caption, filename=document_path.name)
         except TimedOut:
             await asyncio.sleep(min(2 ** attempt, 30))
         except NetworkError:
@@ -927,21 +1110,12 @@ async def safe_send_document(
             log_console("SEND_DOCUMENT_ERROR", f"Attempt {attempt + 1}/{retries}", {"error": err})
             if any(m in err for m in TOO_BIG_MARKERS):
                 size_mb = document_path.stat().st_size // (1024 * 1024)
-                log_console("SEND_DOCUMENT_TOO_BIG", "File exceeds Telegram limit", {
-                    "file":    document_path.name,
-                    "size_mb": size_mb,
-                })
-                await safe_send_text(
-                    bot, chat_id,
-                    f"⚠️ Файл `{document_path.name}` слишком большой для Telegram ({size_mb} МБ).",
-                    parse_mode="Markdown",
-                )
+                await safe_send_text(bot, chat_id, f"⚠️ Файл `{document_path.name}` слишком большой для Telegram ({size_mb} МБ).", parse_mode="Markdown")
                 return None
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send document after {retries} retries")
-
 
 async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: int = 5):
     for attempt in range(retries):
@@ -959,32 +1133,26 @@ async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: i
             await asyncio.sleep(2)
     raise RuntimeError(f"Failed to send media group after {retries} retries")
 
-
-# ─── Клавиатура выбора модели ─────────────────────────────────────────────────
-
 def get_model_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Flash 3.1  —  быстрее, думает", callback_data="modelsel_flash")],
         [InlineKeyboardButton("🎨 Pro 3  —  качественнее",         callback_data="modelsel_pro")],
-        [InlineKeyboardButton("🧠 GPT-5 Image  —  OpenAI",         callback_data="modelsel_gpt5")],
+        [InlineKeyboardButton("🧠 GPT Image 1.5  —  OpenAI",       callback_data="modelsel_openai_gpt")],
         [InlineKeyboardButton("🌊 Seedream 4.5  —  ByteDance",     callback_data="modelsel_seedream")],
         [InlineKeyboardButton("🌀 FLUX.2 Max  —  Black Forest",    callback_data="modelsel_flux")],
         [InlineKeyboardButton("🏞 Riverflow v2 Pro",               callback_data="modelsel_river")],
         [InlineKeyboardButton("❌ Отмена",                          callback_data="cmd_status")],
     ])
 
-
-# =============================================================================
-# Handlers
-# =============================================================================
+# -------- Handlers --------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     if not user_manager.is_authorized(telegram_id):
         await update.message.reply_text("❌ Доступ запрещен. Вы не авторизованы для использования этого бота.")
         return
-    user       = user_manager.get_user(telegram_id)
-    remaining  = usage_tracker.get_remaining(telegram_id)
+    user = user_manager.get_user(telegram_id)
+    remaining = usage_tracker.get_remaining(telegram_id)
     user_limit = usage_tracker.get_user_limit(telegram_id)
     premium_badge = "⭐" if str(telegram_id) in PREMIUM_USERS else ""
 
@@ -1005,9 +1173,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         welcome_text,
         parse_mode='Markdown',
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=get_main_menu_keyboard()
     )
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -1038,53 +1205,51 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Задать промпт",       callback_data="cmd_prompt")],
-        [InlineKeyboardButton("🖼 Выбрать референсы",   callback_data="cmd_refs")],
-        [InlineKeyboardButton("⚙️ Открыть настройки",  callback_data="cmd_settings")],
-        [InlineKeyboardButton("📊 Проверить статус",    callback_data="cmd_status")],
-        [InlineKeyboardButton("📥 Скачать референсы",   callback_data="cmd_download_refs")],
+        [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+        [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("⚙️ Открыть настройки", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
+        [InlineKeyboardButton("📥 Скачать референсы", callback_data="cmd_download_refs")],
     ])
 
     await update.message.reply_text(help_text, parse_mode='Markdown', reply_markup=keyboard)
-
 
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     if not user_manager.is_authorized(telegram_id):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
-    used          = usage_tracker.get_usage_count(telegram_id)
-    user_limit    = usage_tracker.get_user_limit(telegram_id)
-    remaining     = usage_tracker.get_remaining(telegram_id)
+    used = usage_tracker.get_usage_count(telegram_id)
+    user_limit = usage_tracker.get_user_limit(telegram_id)
+    remaining = usage_tracker.get_remaining(telegram_id)
     premium_badge = "⭐ Premium" if str(telegram_id) in PREMIUM_USERS else ""
 
     bar_length = 10
     filled = int((used / user_limit) * bar_length) if user_limit else 0
-    bar    = "█" * filled + "░" * (bar_length - filled)
+    bar = "█" * filled + "░" * (bar_length - filled)
 
     await update.message.reply_text(
         f"📊 Использовано: `{used}/{user_limit}` {premium_badge}\n"
         f"Осталось: `{remaining}`\n"
         f"`[{bar}]`",
-        parse_mode='Markdown',
+        parse_mode='Markdown'
     )
-
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     if not user_manager.is_authorized(telegram_id):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
-    settings   = get_user_settings(telegram_id)
+    settings = get_user_settings(telegram_id)
     seed_value = settings.get('seed', -1)
-    seed_text  = "авто (случайный)" if seed_value <= 0 else str(seed_value)
+    seed_text = "авто (случайный)" if seed_value <= 0 else str(seed_value)
 
     keyboard = [
-        [InlineKeyboardButton("🌡 Температура",         callback_data="set_temperature")],
-        [InlineKeyboardButton("📐 Соотношение сторон",  callback_data="set_aspect_ratio")],
-        [InlineKeyboardButton("📏 Размер",               callback_data="set_image_size")],
-        [InlineKeyboardButton("🎲 Seed",                 callback_data="set_seed")],
-        [InlineKeyboardButton("📊 Проверить статус",    callback_data="cmd_status")],
+        [InlineKeyboardButton("🌡 Температура", callback_data="set_temperature")],
+        [InlineKeyboardButton("📐 Соотношение сторон", callback_data="set_aspect_ratio")],
+        [InlineKeyboardButton("📏 Размер", callback_data="set_image_size")],
+        [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
     ]
     await update.message.reply_text(
         f"⚙️ *Текущие настройки:*\n\n"
@@ -1095,9 +1260,8 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.\n\n"
         f"🤖 *Модель* выбирается перед каждой генерацией.",
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1106,12 +1270,12 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     telegram_id = update.effective_user.id
-    data        = query.data
+    data = query.data
 
-    # ── Навигационные команды ──────────────────────────────────────────────────
     if data == "cmd_prompt":
         await safe_edit_text(query, "📝 Введите промпт:", parse_mode='Markdown')
-        get_user_session(telegram_id)["awaiting"] = "prompt"
+        session = get_user_session(telegram_id)
+        session["awaiting"] = "prompt"
         return
 
     elif data == "cmd_refs":
@@ -1119,15 +1283,16 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "cmd_settings":
-        settings   = get_user_settings(telegram_id)
+        settings = get_user_settings(telegram_id)
         seed_value = settings.get('seed', -1)
-        seed_text  = "авто (случайный)" if seed_value <= 0 else str(seed_value)
-        keyboard   = [
-            [InlineKeyboardButton("🌡 Температура",        callback_data="set_temperature")],
+        seed_text = "авто (случайный)" if seed_value <= 0 else str(seed_value)
+
+        keyboard = [
+            [InlineKeyboardButton("🌡 Температура", callback_data="set_temperature")],
             [InlineKeyboardButton("📐 Соотношение сторон", callback_data="set_aspect_ratio")],
-            [InlineKeyboardButton("📏 Размер",              callback_data="set_image_size")],
-            [InlineKeyboardButton("🎲 Seed",                callback_data="set_seed")],
-            [InlineKeyboardButton("📊 Проверить статус",   callback_data="cmd_status")],
+            [InlineKeyboardButton("📏 Размер", callback_data="set_image_size")],
+            [InlineKeyboardButton("🎲 Seed", callback_data="set_seed")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ]
         await safe_edit_text(
             query,
@@ -1139,7 +1304,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 *Совет:* Seed из результата можно скопировать и установить здесь для повтора.\n\n"
             f"🤖 *Модель* выбирается перед каждой генерацией.",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
@@ -1155,22 +1320,17 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await download_refs_command(update, context)
         return
 
-    # ── Настройки генерации ───────────────────────────────────────────────────
     if telegram_id not in user_settings:
         user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
 
     if data == "set_temperature":
         keyboard = [
-            [
-                InlineKeyboardButton("0.0", callback_data="temp_0.0"),
-                InlineKeyboardButton("0.3", callback_data="temp_0.3"),
-                InlineKeyboardButton("0.5", callback_data="temp_0.5"),
-            ],
-            [
-                InlineKeyboardButton("0.7",  callback_data="temp_0.7"),
-                InlineKeyboardButton("0.85", callback_data="temp_0.85"),
-                InlineKeyboardButton("1.0",  callback_data="temp_1.0"),
-            ],
+            [InlineKeyboardButton("0.0", callback_data="temp_0.0"),
+             InlineKeyboardButton("0.3", callback_data="temp_0.3"),
+             InlineKeyboardButton("0.5", callback_data="temp_0.5")],
+            [InlineKeyboardButton("0.7", callback_data="temp_0.7"),
+             InlineKeyboardButton("0.85", callback_data="temp_0.85"),
+             InlineKeyboardButton("1.0", callback_data="temp_1.0")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
         await safe_edit_text(query, "Выберите температуру:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1178,31 +1338,19 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("temp_"):
         temp = float(data.split("_")[1])
         user_settings[telegram_id]["temperature"] = temp
-        await safe_edit_text(
-            query,
-            f"✅ Температура: `{temp}`\n\nИспользуйте /settings или /status.",
-            parse_mode='Markdown',
-        )
+        await safe_edit_text(query, f"✅ Температура: `{temp}`\n\nИспользуйте /settings или /status.", parse_mode='Markdown')
 
     elif data == "set_aspect_ratio":
         keyboard = [
-            [
-                InlineKeyboardButton("1:1", callback_data="ratio_1:1"),
-                InlineKeyboardButton("3:2", callback_data="ratio_3:2"),
-                InlineKeyboardButton("2:3", callback_data="ratio_2:3"),
-            ],
-            [
-                InlineKeyboardButton("4:3", callback_data="ratio_4:3"),
-                InlineKeyboardButton("3:4", callback_data="ratio_3:4"),
-            ],
-            [
-                InlineKeyboardButton("5:4",  callback_data="ratio_5:4"),
-                InlineKeyboardButton("4:5",  callback_data="ratio_4:5"),
-            ],
-            [
-                InlineKeyboardButton("16:9", callback_data="ratio_16:9"),
-                InlineKeyboardButton("9:16", callback_data="ratio_9:16"),
-            ],
+            [InlineKeyboardButton("1:1", callback_data="ratio_1:1"),
+             InlineKeyboardButton("3:2", callback_data="ratio_3:2"),
+             InlineKeyboardButton("2:3", callback_data="ratio_2:3")],
+            [InlineKeyboardButton("4:3", callback_data="ratio_4:3"),
+             InlineKeyboardButton("3:4", callback_data="ratio_3:4")],
+            [InlineKeyboardButton("5:4", callback_data="ratio_5:4"),
+             InlineKeyboardButton("4:5", callback_data="ratio_4:5")],
+            [InlineKeyboardButton("16:9", callback_data="ratio_16:9"),
+             InlineKeyboardButton("9:16", callback_data="ratio_9:16")],
             [InlineKeyboardButton("21:9", callback_data="ratio_21:9")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
@@ -1211,19 +1359,13 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("ratio_"):
         ratio = data.split("_", 1)[1]
         user_settings[telegram_id]["aspect_ratio"] = ratio
-        await safe_edit_text(
-            query,
-            f"✅ Соотношение: `{ratio}`\n\nИспользуйте /settings или /status.",
-            parse_mode='Markdown',
-        )
+        await safe_edit_text(query, f"✅ Соотношение: `{ratio}`\n\nИспользуйте /settings или /status.", parse_mode='Markdown')
 
     elif data == "set_image_size":
         keyboard = [
-            [
-                InlineKeyboardButton("1K", callback_data="size_1K"),
-                InlineKeyboardButton("2K", callback_data="size_2K"),
-                InlineKeyboardButton("4K", callback_data="size_4K"),
-            ],
+            [InlineKeyboardButton("1K", callback_data="size_1K"),
+             InlineKeyboardButton("2K", callback_data="size_2K"),
+             InlineKeyboardButton("4K", callback_data="size_4K")],
             [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
         await safe_edit_text(query, "Выберите размер:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1231,66 +1373,43 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("size_"):
         size = data.split("_", 1)[1]
         user_settings[telegram_id]["image_size"] = size
-        log_console("SIZE_SET", f"User {telegram_id} set image_size", {"size": size})
-        await safe_edit_text(
-            query,
-            f"✅ Размер: `{size}`\n\nИспользуйте /settings или /status.",
-            parse_mode='Markdown',
-        )
+        await safe_edit_text(query, f"✅ Размер: `{size}`\n\nИспользуйте /settings или /status.", parse_mode='Markdown')
 
     elif data == "set_seed":
         current_seed = user_settings[telegram_id].get("seed", -1)
         keyboard = [
             [InlineKeyboardButton("🎲 Случайный (-1)", callback_data="seed_1")],
-            [
-                InlineKeyboardButton("42",    callback_data="seed_42"),
-                InlineKeyboardButton("128",   callback_data="seed_128"),
-                InlineKeyboardButton("777",   callback_data="seed_777"),
-            ],
-            [
-                InlineKeyboardButton("1024",  callback_data="seed_1024"),
-                InlineKeyboardButton("2048",  callback_data="seed_2048"),
-                InlineKeyboardButton("12345", callback_data="seed_12345"),
-            ],
+            [InlineKeyboardButton("42", callback_data="seed_42"),
+             InlineKeyboardButton("128", callback_data="seed_128"),
+             InlineKeyboardButton("777", callback_data="seed_777")],
+            [InlineKeyboardButton("1024", callback_data="seed_1024"),
+             InlineKeyboardButton("2048", callback_data="seed_2048"),
+             InlineKeyboardButton("12345", callback_data="seed_12345")],
             [InlineKeyboardButton("✏️ Ввести вручную", callback_data="seed_custom")],
-            [InlineKeyboardButton("🔙 Назад",           callback_data="cmd_settings")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="cmd_settings")],
         ]
         current_text = "авто" if current_seed <= 0 else str(current_seed)
         await safe_edit_text(
             query,
-            "🎲 Выберите seed:\n\n"
-            "• Случайный (-1) — каждый раз разный результат\n"
-            "• Фиксированный — воспроизводимый результат\n\n"
+            "🎲 Выберите seed:\n\n• Случайный (-1) — каждый раз разный результат\n• Фиксированный — воспроизводимый результат\n\n"
             f"Текущий: `{current_text}`",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
     elif data.startswith("seed_"):
         seed_str = data.split("_", 1)[1]
         if seed_str == "custom":
             context.user_data['awaiting_seed'] = True
-            await safe_edit_text(
-                query,
-                "✏️ Введите seed (целое число):\n\n"
-                "• Положительное число — фиксированный seed\n"
-                "• `-1` — случайный seed\n\n"
-                "Отправьте числом в чат.",
-            )
+            await safe_edit_text(query, "✏️ Введите seed (целое число):\n\n• Положительное число — фиксированный seed\n• `-1` — случайный seed\n\nОтправьте числом в чат.")
         else:
             seed = int(seed_str)
             if seed == 1:
                 seed = -1
             user_settings[telegram_id]["seed"] = seed
             seed_text = "случайный" if seed <= 0 else str(seed)
-            await safe_edit_text(
-                query,
-                f"✅ Seed: `{seed_text}`\n\nИспользуйте /settings или /status.",
-                parse_mode='Markdown',
-            )
+            await safe_edit_text(query, f"✅ Seed: `{seed_text}`\n\nИспользуйте /settings или /status.", parse_mode='Markdown')
 
-
-# ─── Обработчик выбора модели ─────────────────────────────────────────────────
 
 async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1301,7 +1420,7 @@ async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     telegram_id = update.effective_user.id
     chat_id     = update.effective_chat.id
-    data        = query.data  # "modelsel_flash" или "modelsel_pro"
+    data        = query.data
 
     if not user_manager.is_authorized(telegram_id):
         await query.edit_message_text("❌ Доступ запрещен.")
@@ -1312,14 +1431,14 @@ async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     _model_map = {
-        "modelsel_flash":    MODEL_FLASH,
-        "modelsel_pro":      MODEL_PRO,
-        "modelsel_gpt5":     MODEL_GPT5,
-        "modelsel_seedream": MODEL_SEEDREAM,
-        "modelsel_flux":     MODEL_FLUX,
-        "modelsel_river":    MODEL_RIVER,
+        "modelsel_flash":       MODEL_FLASH,
+        "modelsel_pro":         MODEL_PRO,
+        "modelsel_openai_gpt":  MODEL_OPENAI_GPT,
+        "modelsel_seedream":    MODEL_SEEDREAM,
+        "modelsel_flux":        MODEL_FLUX,
+        "modelsel_river":       MODEL_RIVER,
     }
-    model       = _model_map.get(data, MODEL_PRO)
+    model = _model_map.get(data, MODEL_PRO)
     model_label = MODEL_LABELS[model]
 
     session  = get_user_session(telegram_id)
@@ -1328,21 +1447,12 @@ async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
     refs     = session.get("refs", [])
 
     if not prompt:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]
-        ])
-        await query.edit_message_text(
-            "⚠️ *Промпт не задан!*\n\nНажмите кнопку ниже или используйте /prompt ваше описание",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
-        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]])
+        await query.edit_message_text("⚠️ *Промпт не задан!*\n\nНажмите кнопку ниже или используйте /prompt ваше описание", parse_mode='Markdown', reply_markup=keyboard)
         return
 
     try:
-        await query.edit_message_text(
-            f"🔄 *Запуск генерации...*\n\n🤖 Модель: {model_label}",
-            parse_mode='Markdown',
-        )
+        await query.edit_message_text(f"🔄 *Запуск генерации...*\n\n🤖 Модель: {model_label}", parse_mode='Markdown')
     except Exception as e:
         if "Message is not modified" not in str(e):
             log_console("MODEL_SELECT_EDIT_ERROR", str(e))
@@ -1356,9 +1466,6 @@ async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
             status_message_id, model,
         )
     )
-
-
-# ─── Команды ──────────────────────────────────────────────────────────────────
 
 async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1375,30 +1482,24 @@ async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         session = get_user_session(telegram_id)
         session["prompt"] = text
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Сгенерировать",      callback_data="cmd_generate")],
-            [InlineKeyboardButton("📝 Изменить промпт",    callback_data="cmd_prompt")],
-            [InlineKeyboardButton("🖼 Выбрать референсы",  callback_data="cmd_refs")],
-            [InlineKeyboardButton("⚙️ Параметры",          callback_data="cmd_settings")],
-            [InlineKeyboardButton("📊 Проверить статус",   callback_data="cmd_status")],
+            [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ])
         await update.message.reply_text(
-            f"✅ *Промпт установлен:*\n`{text[:300]}{'...' if len(text) > 300 else ''}`\n\n"
-            f"Выберите следующее действие:",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
+            f"✅ *Промпт установлен:*\n`{text[:300]}{'...' if len(text) > 300 else ''}`\n\nВыберите следующее действие:",
+            parse_mode='Markdown', reply_markup=keyboard
         )
     else:
-        get_user_session(telegram_id)["awaiting"] = "prompt"
-        await update.message.reply_text(
-            "📝 *Введите текстовый промпт:*\n\n"
-            "💡 Чем детальнее описание, тем лучше результат.",
-            parse_mode='Markdown',
-        )
-
+        session = get_user_session(telegram_id)
+        session["awaiting"] = "prompt"
+        await update.message.reply_text("📝 *Введите текстовый промпт:*\n\n💡 Чем детальнее описание, тем лучше результат.", parse_mode='Markdown')
 
 async def select_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    chat_id     = update.effective_chat.id
+    chat_id = update.effective_chat.id
 
     if not user_manager.is_authorized(telegram_id):
         if update.message:
@@ -1419,19 +1520,14 @@ async def select_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not recent_images:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
-            [InlineKeyboardButton("📊 Статус",        callback_data="cmd_status")],
+            [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
         ])
-        await message.reply_text(
-            "📂 *У вас нет сохранённых изображений.*\n\n"
-            "Загрузите изображения через чат, а затем используйте /refs",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
-        )
+        await message.reply_text("📂 *У вас нет сохранённых изображений.*\n\nЗагрузите изображения через чат, а затем используйте /refs", parse_mode='Markdown', reply_markup=keyboard)
         return
 
     display_images = recent_images[:10]
 
-    media_group  = []
+    media_group = []
     preview_files = []
 
     for idx, img in enumerate(display_images):
@@ -1448,39 +1544,32 @@ async def select_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         for media in media_group:
             try:
                 media.media.close()
-            except Exception:
+            except:
                 pass
         for path in preview_files:
             try:
                 os.unlink(path)
-            except Exception:
+            except:
                 pass
 
-    session        = get_user_session(telegram_id)
-    current_refs   = session.get("refs", [])
-    keyboard_rows  = _build_refs_keyboard(display_images, current_refs)
-    selected_count = len(current_refs)
+    session = get_user_session(telegram_id)
+    current_refs = session.get("refs", [])
+    keyboard_rows = _build_refs_keyboard(display_images, current_refs)
 
+    selected_count = len(current_refs)
     await message.reply_text(
-        f"📸 *Выбор референсных изображений*\n"
-        f"Выбрано: `{selected_count}`\n\n"
-        f"Нажмите на номер для выбора/отмены:",
-        reply_markup=InlineKeyboardMarkup(keyboard_rows),
-        parse_mode='Markdown',
+        f"📸 *Выбор референсных изображений*\nВыбрано: `{selected_count}`\n\nНажмите на номер для выбора/отмены:",
+        reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode='Markdown'
     )
 
     context.user_data['ref_selection_images'] = display_images
 
-
-def _build_refs_keyboard(
-    images: List[Path],
-    selected_refs: List[Path],
-) -> List[List[InlineKeyboardButton]]:
+def _build_refs_keyboard(images: List[Path], selected_refs: List[Path]) -> List[List[InlineKeyboardButton]]:
     keyboard = []
-    row      = []
+    row = []
     for i, img in enumerate(images):
         is_sel = img in selected_refs
-        txt    = f"✅ {i + 1}" if is_sel else f"📷 {i + 1}"
+        txt = f"✅ {i + 1}" if is_sel else f"📷 {i + 1}"
         row.append(InlineKeyboardButton(txt, callback_data=f"ref_sel_{i}"))
         if len(row) == 5:
             keyboard.append(row)
@@ -1495,7 +1584,6 @@ def _build_refs_keyboard(
     ])
     return keyboard
 
-
 async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -1503,10 +1591,10 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     telegram_id = update.effective_user.id
-    data        = query.data
+    data = query.data
 
     session = get_user_session(telegram_id)
-    images  = context.user_data.get("ref_selection_images", [])
+    images = context.user_data.get("ref_selection_images", [])
 
     if data.startswith("ref_sel_"):
         idx = int(data.split("_")[2])
@@ -1520,14 +1608,9 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = _build_refs_keyboard(images, session["refs"])
         selected = len(session["refs"])
 
+        new_text = f"📸 *Выбор референсных изображений*\nВыбрано: `{selected}`\n\nНажмите на номер для выбора/отмены:"
         try:
-            await query.edit_message_text(
-                f"📸 *Выбор референсных изображений*\n"
-                f"Выбрано: `{selected}`\n\n"
-                f"Нажмите на номер для выбора/отмены:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown",
-            )
+            await query.edit_message_text(new_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         except Exception as e:
             if "Message is not modified" not in str(e):
                 raise
@@ -1535,35 +1618,24 @@ async def refs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "refs_clear":
         session["refs"] = []
         context.user_data.pop("ref_selection_images", None)
-        await safe_edit_text(
-            query,
-            "❌ Референсы очищены.\n\n"
-            "Используйте /refs чтобы выбрать снова или /gen для генерации без референсов.",
-            parse_mode="Markdown",
-        )
+        await safe_edit_text(query, "❌ Референсы очищены.\n\nИспользуйте /refs чтобы выбрать снова или /gen для генерации без референсов.", parse_mode="Markdown")
 
     elif data == "refs_done":
         count = len(session["refs"])
         context.user_data.pop("ref_selection_images", None)
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Сгенерировать",     callback_data="cmd_generate")],
-            [InlineKeyboardButton("📝 Изменить промпт",   callback_data="cmd_prompt")],
+            [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
             [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
-            [InlineKeyboardButton("⚙️ Параметры",         callback_data="cmd_settings")],
-            [InlineKeyboardButton("📊 Проверить статус",  callback_data="cmd_status")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
             [InlineKeyboardButton("📥 Скачать референсы", callback_data="cmd_download_refs")],
         ])
-        await safe_edit_text(
-            query,
-            f"💾 *Сохранено референсов: {count}*\n\nВыберите действие:",
-            reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
+        await safe_edit_text(query, f"💾 *Сохранено референсов: {count}*\n\nВыберите действие:", reply_markup=keyboard, parse_mode="Markdown")
 
     elif data == "cancel_input":
         session["awaiting"] = None
         await safe_edit_text(query, "❌ Ввод отменен.")
-
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1583,16 +1655,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
 
     settings = get_user_settings(telegram_id)
-    session  = get_user_session(telegram_id)
+    session = get_user_session(telegram_id)
 
-    seed_val   = settings.get('seed', -1)
-    seed_text  = "🎲 авто" if seed_val <= 0 else f"🎲 `{seed_val}`"
+    seed_val = settings.get('seed', -1)
+    seed_text = "🎲 авто" if seed_val <= 0 else f"🎲 `{seed_val}`"
+
     refs_count = len(session.get("refs", []))
-    prompt     = session.get("prompt", "")
-    prompt_text = (
-        f"`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`"
-        if prompt else "⚠️ *не задан*"
-    )
+    prompt = session.get("prompt", "")
+    prompt_text = f"`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`" if prompt else "⚠️ *не задан*"
 
     refs = session.get("refs", [])
     if refs:
@@ -1624,15 +1694,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if prompt:
         text += "✅ *Готова к генерации!*"
         keyboard_buttons = [
-            [InlineKeyboardButton("▶️ Сгенерировать",      callback_data="cmd_generate")],
+            [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
             [InlineKeyboardButton("⚙️ Изменить настройки", callback_data="cmd_settings")],
-            [InlineKeyboardButton("📝 Изменить промпт",    callback_data="cmd_prompt")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
         ]
     else:
         text += "⚠️ *Задайте промпт перед генерацией*"
         keyboard_buttons = [
             [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
-            [InlineKeyboardButton("⚙️ Параметры",     callback_data="cmd_settings")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
         ]
 
     keyboard_buttons.insert(1, [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")])
@@ -1641,7 +1711,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
     await message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
-
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1664,33 +1733,28 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     session = get_user_session(telegram_id)
-    prompt  = session.get("prompt", "")
+    prompt = session.get("prompt", "")
 
     if not prompt:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]
-        ])
-        await message.reply_text(
-            "⚠️ *Промпт не задан!*\n\n"
-            "Нажмите кнопку ниже или используйте /prompt ваше описание",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
-        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")]])
+        await message.reply_text("⚠️ *Промпт не задан!*\n\nНажмите кнопку ниже или используйте /prompt ваше описание", parse_mode='Markdown', reply_markup=keyboard)
         return
 
     refs_count = len(session.get("refs", []))
 
     await message.reply_text(
         f"🤖 *Выберите модель для генерации:*\n\n"
-        f"⚡ *Flash 3.1* — быстрее, режим «думать» (ThinkingConfig)\n"
-        f"🎨 *Pro 3* — выше качество\n"
-        f"🧠 *GPT-5 Image* — OpenAI\n\n"
+        f"⚡ *Flash 3.1* — быстрее, режим «думать» (Google)\n"
+        f"🎨 *Pro 3* — выше качество (Google)\n"
+        f"🧠 *GPT Image 1.5* — OpenAI (Direct API)\n"
+        f"🌊 *Seedream 4.5* — ByteDance (OpenRouter)\n"
+        f"🌀 *FLUX.2 Max* — Black Forest (OpenRouter)\n"
+        f"🏞 *Riverflow v2 Pro* — Sourceful (OpenRouter)\n\n"
         f"📝 Промпт: `{prompt[:100]}{'...' if len(prompt) > 100 else ''}`\n"
         f"🖼 Референсов: {refs_count}",
         parse_mode='Markdown',
         reply_markup=get_model_selection_keyboard(),
     )
-
 
 async def _run_generation(
     bot,
@@ -1702,9 +1766,20 @@ async def _run_generation(
     status_message_id: Optional[int] = None,
     model: str = MODEL_PRO,
 ):
-    start_time  = datetime.now()
-    config_id   = generate_config_id()
+    start_time = datetime.now()
+    config_id = generate_config_id()
     model_label = MODEL_LABELS.get(model, model)
+
+    # Маршрутизация на основе модели
+    if model in [MODEL_FLASH, MODEL_PRO]:
+        active_generator = gemini_generator
+        provider_log = "google"
+    elif model == MODEL_OPENAI_GPT:
+        active_generator = openai_generator
+        provider_log = "openai"
+    else:
+        active_generator = openrouter_generator
+        provider_log = "openrouter"
 
     try:
         final_prompt = (
@@ -1717,7 +1792,7 @@ async def _run_generation(
             "- Focus on visual interpretation and artistic expression\n"
             "- Avoid text responses - only generate the image\n"
             "- Be creative and flexible in your interpretation\n\n"
-            f"User's request:\n{prompt}\n\n"
+            f"User's request:\nСделай картинку. {prompt}\n\n"
             "Remember: Your only job is to CREATE THE IMAGE. Generate it now."
         )
 
@@ -1729,6 +1804,7 @@ async def _run_generation(
                 text=(
                     f"🔄 *Генерация изображения...*\n\n"
                     f"🤖 Модель: {model_label}\n"
+                    f"🌐 Провайдер: {provider_log.capitalize()}\n"
                     f"📝 Промпт: `{prompt[:200]}{'...' if len(prompt) > 200 else ''}`\n"
                     f"🖼 Референсов: {len(refs_paths)}\n"
                     f"{settings_text}\n\n"
@@ -1752,13 +1828,13 @@ async def _run_generation(
         seed_setting = settings.get("seed", -1)
 
         AIRequestLogger.log({
-            "event":     "generation_start",
-            "user_id":   telegram_id,
-            "model":     model,
-            "provider":  "openrouter",
-            "prompt":    prompt,
-            "num_refs":  len(ref_data),
-            "settings":  settings,
+            "event": "generation_start",
+            "user_id": telegram_id,
+            "model": model,
+            "provider": provider_log,
+            "prompt": prompt,
+            "num_refs": len(ref_data),
+            "settings": settings,
             "config_id": config_id,
         })
 
@@ -1781,7 +1857,7 @@ async def _run_generation(
                 if "Message is not modified" not in str(e):
                     log_console("RETRY_EDIT_ERROR", str(e))
 
-        img_bytes, error, used_seed = await gemini_generator.generate_image(
+        img_bytes, error, used_seed = await active_generator.generate_image(
             prompt=final_prompt,
             reference_images=ref_data,
             temperature=settings.get("temperature", 1.0),
@@ -1797,12 +1873,7 @@ async def _run_generation(
         if error or not img_bytes:
             error_msg = f"❌ Ошибка генерации: `{error or 'Unknown'}`"
             try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=error_msg,
-                    parse_mode="Markdown",
-                )
+                await bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=error_msg, parse_mode="Markdown")
             except Exception as e:
                 if "Message is not modified" not in str(e):
                     await safe_send_text(bot, chat_id, error_msg)
@@ -1811,7 +1882,7 @@ async def _run_generation(
         saved_path = image_storage.save_image(telegram_id, img_bytes, prefix="generated")
 
         usage_tracker.increment_usage(telegram_id)
-        remaining  = usage_tracker.get_remaining(telegram_id)
+        remaining = usage_tracker.get_remaining(telegram_id)
         user_limit = usage_tracker.get_user_limit(telegram_id)
 
         save_generation_config(telegram_id, config_id, prompt, settings, refs_paths)
@@ -1821,7 +1892,6 @@ async def _run_generation(
         except Exception:
             pass
 
-        # 1. Превью
         photo_bytes_for_tg = resize_for_telegram(img_bytes)
         if photo_bytes_for_tg is not img_bytes:
             tmp_preview = saved_path.with_name(saved_path.stem + "_preview.jpg")
@@ -1832,16 +1902,10 @@ async def _run_generation(
             preview_path = saved_path
 
         try:
-            await safe_send_photo(
-                bot, chat_id, preview_path,
-                caption=f"✅ Готово! {model_label} ⏱{int(duration)}с",
-            )
+            await safe_send_photo(bot, chat_id, preview_path, caption=f"✅ Готово! {model_label} ⏱{int(duration)}с")
         except Exception as e:
             log_console("SEND_PHOTO_FINAL_ERROR", str(e))
-            await safe_send_text(
-                bot, chat_id,
-                f"✅ Готово! {model_label} ⏱{int(duration)}с (фото не удалось отправить)",
-            )
+            await safe_send_text(bot, chat_id, f"✅ Готово! {model_label} ⏱{int(duration)}с (фото не удалось отправить)")
 
         if preview_path != saved_path:
             try:
@@ -1849,9 +1913,9 @@ async def _run_generation(
             except Exception:
                 pass
 
-        # 2. Мета-информация
         meta_text = (
             f"🤖 Модель: {model_label}\n"
+            f"🌐 Провайдер: {provider_log.capitalize()}\n"
             f"🎲 Seed: {used_seed}\n"
             f"🖼 Референсов: {len(ref_data)}\n"
             f"⏱ Время: {int(duration)}с\n"
@@ -1859,48 +1923,37 @@ async def _run_generation(
             f"💾 /set_{config_id}"
         )
         await safe_send_text(bot, chat_id, meta_text, parse_mode=None)
+        await safe_send_document(bot, chat_id, saved_path, caption=f"📎 {len(img_bytes)//1024} KB")
 
-        # 3. Оригинал файлом
-        await safe_send_document(
-            bot, chat_id, saved_path,
-            caption=f"📎 {len(img_bytes) // 1024} KB",
-        )
-
-        # 4. Клавиатура действий
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Повторить",          callback_data="cmd_generate")],
-            [InlineKeyboardButton("📝 Изменить промпт",    callback_data="cmd_prompt")],
-            [InlineKeyboardButton("🖼 Выбрать референсы",  callback_data="cmd_refs")],
-            [InlineKeyboardButton("⚙️ Параметры",          callback_data="cmd_settings")],
-            [InlineKeyboardButton("📊 Проверить статус",   callback_data="cmd_status")],
+            [InlineKeyboardButton("🔄 Повторить", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ])
         await safe_send_text(bot, chat_id, "Выберите действие:", reply_markup=keyboard)
 
         AIRequestLogger.log({
-            "event":     "generation_success",
-            "user_id":   telegram_id,
-            "model":     model,
-            "provider":  "openrouter",
+            "event": "generation_success",
+            "user_id": telegram_id,
+            "model": model,
+            "provider": provider_log,
             "config_id": config_id,
-            "seed":      used_seed,
-            "duration":  duration,
+            "seed": used_seed,
+            "duration": duration,
         })
 
     except Exception as e:
         log_console("GENERATION_ERROR", str(e), {"trace": traceback.format_exc()})
         try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_message_id,
-                text="❌ Произошла критическая ошибка при генерации.",
-            )
+            await bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text="❌ Произошла критическая ошибка при генерации.")
         except Exception:
             await safe_send_text(bot, chat_id, "❌ Произошла критическая ошибка при генерации.")
 
-
 async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    chat_id     = update.effective_chat.id
+    chat_id = update.effective_chat.id
 
     if update.callback_query:
         try:
@@ -1916,28 +1969,20 @@ async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     session = get_user_session(telegram_id)
-    refs    = session.get("refs", [])
+    refs = session.get("refs", [])
 
     if not refs:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
-        ])
-        await message.reply_text(
-            "⚠️ *Нет выбранных референсов.*\n\nСначала выберите референсы через /refs",
-            parse_mode="Markdown",
-            reply_markup=keyboard,
-        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")]])
+        await message.reply_text("⚠️ *Нет выбранных референсов.*\n\nСначала выберите референсы через /refs", parse_mode="Markdown", reply_markup=keyboard)
         return
 
     status = await message.reply_text(f"📤 Отправляю {len(refs)} файл(ов)...")
-    sent   = 0
-    failed = 0
+    sent = failed = 0
 
     for idx, ref_path in enumerate(refs):
         try:
             ref_path = Path(ref_path)
             if not ref_path.exists():
-                log_console("DOWNLOAD_REFS", f"File not found: {ref_path}")
                 failed += 1
                 continue
             size_kb = ref_path.stat().st_size // 1024
@@ -1945,7 +1990,6 @@ async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TY
             await safe_send_document(context.bot, chat_id, ref_path, caption=caption)
             sent += 1
         except Exception as e:
-            log_console("DOWNLOAD_REFS_ERROR", f"Failed to send ref {idx + 1}", {"error": str(e)})
             failed += 1
 
     try:
@@ -1959,11 +2003,9 @@ async def download_refs_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")],
-        [InlineKeyboardButton("▶️ Сгенерировать",     callback_data="cmd_generate")],
+        [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
     ])
-
     await safe_send_text(context.bot, chat_id, "\n".join(result_parts), reply_markup=keyboard)
-
 
 async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -1977,20 +2019,17 @@ async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         data = query.data
         if data.startswith("load_config_"):
             config_id = data.replace("load_config_", "")
-            message   = query.message
+            message = query.message
         else:
             return
     else:
-        text  = update.message.text.strip()
+        text = update.message.text.strip()
         match = re.match(r'^/set_([a-zA-Z0-9_]+)$', text)
         if not match:
-            await update.message.reply_text(
-                "❌ Неверный формат. Используйте: `/set_<id>`",
-                parse_mode='Markdown',
-            )
+            await update.message.reply_text("❌ Неверный формат. Используйте: `/set_<id>`", parse_mode='Markdown')
             return
         config_id = match.group(1)
-        message   = update.message
+        message = update.message
 
     if not user_manager.is_authorized(telegram_id):
         await message.reply_text("❌ Доступ запрещен.")
@@ -2003,7 +2042,7 @@ async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     session = get_user_session(telegram_id)
     session["prompt"] = config["prompt"]
-    session["refs"]   = config["references"]
+    session["refs"] = config["references"]
 
     loaded_settings = config.get("settings", {})
     if telegram_id not in user_settings:
@@ -2012,17 +2051,17 @@ async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         if key in loaded_settings:
             user_settings[telegram_id][key] = loaded_settings[key]
 
-    refs_count       = len(config["references"])
+    refs_count = len(config["references"])
     total_refs_saved = len(config.get("references", []))
-    seed_val         = loaded_settings.get('seed', -1)
-    seed_text        = "авто" if seed_val <= 0 else str(seed_val)
+    seed_val = loaded_settings.get('seed', -1)
+    seed_text = "авто" if seed_val <= 0 else str(seed_val)
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Сгенерировать",     callback_data="cmd_generate")],
-        [InlineKeyboardButton("📝 Изменить промпт",   callback_data="cmd_prompt")],
+        [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+        [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
         [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
-        [InlineKeyboardButton("⚙️ Параметры",         callback_data="cmd_settings")],
-        [InlineKeyboardButton("📊 Проверить статус",  callback_data="cmd_status")],
+        [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
     ])
 
     await message.reply_text(
@@ -2036,15 +2075,14 @@ async def load_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🤖 Модель выбирается перед запуском генерации.\n\n"
         f"Теперь можно запускать генерацию:",
         parse_mode='Markdown',
-        reply_markup=keyboard,
+        reply_markup=keyboard
     )
-
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    get_user_session(telegram_id)["awaiting"] = None
+    session = get_user_session(telegram_id)
+    session["awaiting"] = None
     await update.message.reply_text("❌ Действие отменено.", reply_markup=get_main_menu_keyboard())
-
 
 async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -2055,26 +2093,18 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = None
         if update.message.photo:
             file = await update.message.photo[-1].get_file()
-        elif (
-            update.message.document
-            and update.message.document.mime_type
-            and update.message.document.mime_type.startswith("image/")
-        ):
+        elif update.message.document and update.message.document.mime_type and update.message.document.mime_type.startswith("image/"):
             file = await update.message.document.get_file()
         else:
             await update.message.reply_text("Это не изображение.")
             return
 
         photo_bytes = await file.download_as_bytearray()
-        saved_path  = image_storage.save_image(telegram_id, bytes(photo_bytes), prefix="uploaded")
-        log_console("PHOTO_SAVED", f"Saved for user {telegram_id}", {
-            "path":    str(saved_path),
-            "size_kb": len(photo_bytes) // 1024,
-        })
+        saved_path = image_storage.save_image(telegram_id, bytes(photo_bytes), prefix="uploaded")
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
-            [InlineKeyboardButton("📊 Статус",            callback_data="cmd_status")],
+            [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
         ])
 
         await update.message.reply_text(
@@ -2084,16 +2114,15 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"/add_ref_{saved_path.stem} — добавить к текущим рефам\n\n"
             f"Или выберите через меню:",
             parse_mode=None,
-            reply_markup=keyboard,
+            reply_markup=keyboard
         )
     except Exception as e:
         log_console("PHOTO_ERROR", "Error saving photo", {"error": str(e)})
         await update.message.reply_text("❌ Ошибка при сохранении изображения.")
 
-
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    session     = get_user_session(telegram_id)
+    session = get_user_session(telegram_id)
 
     if update.callback_query and update.callback_query.data == "cancel_input":
         try:
@@ -2111,62 +2140,50 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_settings[telegram_id] = DEFAULT_SETTINGS.copy()
             user_settings[telegram_id]["seed"] = seed
             seed_text = "авто (случайный)" if seed <= 0 else str(seed)
-            keyboard  = InlineKeyboardMarkup([
+            keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
-                [InlineKeyboardButton("📊 Статус",    callback_data="cmd_status")],
+                [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
             ])
-            await update.message.reply_text(
-                f"✅ Seed установлен: `{seed_text}`",
-                parse_mode='Markdown',
-                reply_markup=keyboard,
-            )
+            await update.message.reply_text(f"✅ Seed установлен: `{seed_text}`", parse_mode='Markdown', reply_markup=keyboard)
         except ValueError:
-            await update.message.reply_text(
-                "❌ Введите целое число (например: `1234567890` или `-1` для авто)",
-                parse_mode='Markdown',
-            )
+            await update.message.reply_text("❌ Введите целое число (например: `1234567890` или `-1` для авто)", parse_mode='Markdown')
         context.user_data['awaiting_seed'] = False
         return
 
     if session.get("awaiting") == "prompt":
         prompt = update.message.text
         if prompt.startswith('/'):
-            await update.message.reply_text(
-                "❌ Промпт не может начинаться с `/`. Введите обычный текст или используйте /cancel"
-            )
+            await update.message.reply_text("❌ Промпт не может начинаться с `/`. Введите обычный текст или используйте /cancel")
             return
 
-        session["prompt"]   = prompt
+        session["prompt"] = prompt
         session["awaiting"] = None
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Сгенерировать",     callback_data="cmd_generate")],
-            [InlineKeyboardButton("📝 Изменить промпт",   callback_data="cmd_prompt")],
+            [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+            [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
             [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
-            [InlineKeyboardButton("⚙️ Параметры",         callback_data="cmd_settings")],
-            [InlineKeyboardButton("📊 Проверить статус",  callback_data="cmd_status")],
+            [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+            [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ])
 
         await update.message.reply_text(
-            f"✅ *Промпт установлен:*\n`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`\n\n"
-            f"Выберите следующее действие:",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
+            f"✅ *Промпт установлен:*\n`{prompt[:3500]}{'...' if len(prompt) > 3500 else ''}`\n\nВыберите следующее действие:",
+            parse_mode='Markdown', reply_markup=keyboard
         )
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Задать промпт",      callback_data="cmd_prompt")],
-        [InlineKeyboardButton("🖼 Выбрать референсы",  callback_data="cmd_refs")],
-        [InlineKeyboardButton("⚙️ Параметры",          callback_data="cmd_settings")],
-        [InlineKeyboardButton("📊 Статус",             callback_data="cmd_status")],
+        [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+        [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
+        [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
+        [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
     ])
     await update.message.reply_text("ℹ️ Выберите команду из меню ниже:", reply_markup=keyboard)
 
-
 async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-    user        = user_manager.get_user(telegram_id)
+    user = user_manager.get_user(telegram_id)
     if not user or not user.get('admin', False):
         await update.message.reply_text("❌ Нет прав.")
         return
@@ -2176,13 +2193,9 @@ async def reset_user_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_user_id = int(context.args[0])
         usage_tracker.reset_usage(target_user_id)
-        await update.message.reply_text(
-            f"✅ Лимиты пользователя `{target_user_id}` сброшены.",
-            parse_mode='Markdown',
-        )
+        await update.message.reply_text(f"✅ Лимиты пользователя `{target_user_id}` сброшены.", parse_mode='Markdown')
     except ValueError:
         await update.message.reply_text("Неверный ID пользователя.")
-
 
 async def global_error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
     error_msg = str(context.error)
@@ -2190,24 +2203,16 @@ async def global_error_handler(update: Optional[Update], context: ContextTypes.D
     if "terminated by other getUpdates" in error_msg:
         log_console("BOT_CONFLICT", "Запущено несколько копий бота!")
         return
-
-    if "Message is not modified" in error_msg:
+    if "Message is not modified" in error_msg or "Query is too old" in error_msg or "query id is invalid" in error_msg:
         return
 
-    if "Query is too old" in error_msg or "query id is invalid" in error_msg:
-        return
-
-    log_console("GLOBAL_ERROR", "Exception", {
-        "error": error_msg,
-        "trace": traceback.format_exc(),
-    })
+    log_console("GLOBAL_ERROR", "Exception", {"error": error_msg, "trace": traceback.format_exc()})
 
     try:
         if update and update.effective_chat:
             await safe_send_text(context.bot, update.effective_chat.id, "⚠️ Произошла ошибка. Попробуйте позже.")
-    except Exception:
+    except:
         pass
-
 
 async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
@@ -2216,16 +2221,16 @@ async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещен.")
         return
 
-    text      = update.message.text.strip()
+    text = update.message.text.strip()
     set_match = re.match(r'^/set_ref_(.+)$', text)
     add_match = re.match(r'^/add_ref_(.+)$', text)
 
     if set_match:
         filename = set_match.group(1)
-        mode     = "set"
+        mode = "set"
     elif add_match:
         filename = add_match.group(1)
-        mode     = "add"
+        mode = "add"
     else:
         await update.message.reply_text("❌ Неверный формат команды.")
         return
@@ -2242,7 +2247,7 @@ async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mode == "set":
         session["refs"] = [img_path]
-        action_text     = "✅ *Референс заменён.* Теперь выбран только этот файл."
+        action_text = "✅ *Референс заменён.* Теперь выбран только этот файл."
     else:
         if img_path not in session["refs"]:
             session["refs"].append(img_path)
@@ -2251,21 +2256,13 @@ async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_text = f"ℹ️ Этот файл уже есть в референсах. Всего: `{len(session['refs'])}`"
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Сгенерировать",      callback_data="cmd_generate")],
+        [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
         [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")],
-        [InlineKeyboardButton("📊 Статус",             callback_data="cmd_status")],
+        [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
     ])
 
-    await update.message.reply_text(
-        f"{action_text}\n\n`{filename}`",
-        parse_mode='Markdown',
-        reply_markup=keyboard,
-    )
+    await update.message.reply_text(f"{action_text}\n\n`{filename}`", parse_mode='Markdown', reply_markup=keyboard)
 
-
-# =============================================================================
-# main
-# =============================================================================
 
 def main():
     request = HTTPXRequest(
@@ -2283,18 +2280,18 @@ def main():
     )
 
     # Основные команды
-    application.add_handler(CommandHandler("start",       start))
-    application.add_handler(CommandHandler("help",        help_command))
-    application.add_handler(CommandHandler("settings",    settings_menu))
-    application.add_handler(CommandHandler("usage",       usage_command))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("settings", settings_menu))
+    application.add_handler(CommandHandler("usage", usage_command))
     application.add_handler(CommandHandler("reset_usage", reset_user_usage))
 
     # Команды рабочего процесса
-    application.add_handler(CommandHandler("prompt",        set_prompt_command))
-    application.add_handler(CommandHandler("refs",          select_refs_command))
-    application.add_handler(CommandHandler("gen",           generate_command))
-    application.add_handler(CommandHandler("status",        status_command))
-    application.add_handler(CommandHandler("cancel",        cancel_command))
+    application.add_handler(CommandHandler("prompt", set_prompt_command))
+    application.add_handler(CommandHandler("refs", select_refs_command))
+    application.add_handler(CommandHandler("gen", generate_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("download_refs", download_refs_command))
 
     # Быстрые команды референсов
@@ -2306,7 +2303,7 @@ def main():
 
     # Выбор модели
     application.add_handler(
-        CallbackQueryHandler(model_select_callback, pattern=r"^modelsel_(flash|pro|gpt5|seedream|flux|river)$")
+        CallbackQueryHandler(model_select_callback, pattern=r"^modelsel_(flash|pro|openai_gpt|seedream|flux|river)$")
     )
 
     # Callbacks настроек и навигации
@@ -2329,18 +2326,16 @@ def main():
     application.add_error_handler(global_error_handler)
 
     print("=" * 60)
-    print("🤖 Gemini Image Bot via OpenRouter (Dual Model)")
+    print("🤖 Unified Image Generator Bot (Google + OpenAI + OpenRouter)")
     print("=" * 60)
     print(f"📊 Лимит: {DAILY_LIMIT}/день (обычный)")
     print(f"⭐ Лимит Premium: {DAILY_LIMIT_PREMIUM}/день")
     print(f"👥 Пользователей: {len(user_manager.users)}")
     print(f"💎 Premium: {len(PREMIUM_USERS)}")
     print(f"⏱ Таймаут: {GEMINI_GENERATION_TIMEOUT}s")
-    print(f"🎲 Seed: {SEED_MIN} - {SEED_MAX}")
-    print(f"🌐 Провайдер: OpenRouter ({OPENROUTER_BASE_URL})")
-    print(f"🤖 Flash    → {OPENROUTER_MODEL_MAP[MODEL_FLASH]}")
-    print(f"🤖 Pro      → {OPENROUTER_MODEL_MAP[MODEL_PRO]}")
-    print(f"🤖 GPT-5    → {OPENROUTER_MODEL_MAP[MODEL_GPT5]}")
+    print(f"🤖 Модели Google: {MODEL_FLASH} | {MODEL_PRO}")
+    print(f"🤖 Модели OpenAI: {MODEL_OPENAI_GPT}")
+    print(f"🌐 Провайдер OR: OpenRouter ({OPENROUTER_BASE_URL})")
     print(f"🤖 Seedream → {OPENROUTER_MODEL_MAP[MODEL_SEEDREAM]}")
     print(f"🤖 FLUX     → {OPENROUTER_MODEL_MAP[MODEL_FLUX]}")
     print(f"🤖 River    → {OPENROUTER_MODEL_MAP[MODEL_RIVER]}")
@@ -2350,7 +2345,6 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
-
 
 if __name__ == "__main__":
     main()
