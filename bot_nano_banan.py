@@ -70,11 +70,14 @@ MODEL_PRO   = "gemini-3-pro-image-preview"
 
 # OpenAI (Direct)
 MODEL_OPENAI_GPT = "gpt-image-1.5"
+# https://developers.openai.com/api/reference/resources/images/methods/generate
 
 # OpenRouter
 MODEL_SEEDREAM = "seedream-4.5"
 MODEL_FLUX     = "flux.2-max"
 MODEL_RIVER    = "riverflow-v2-pro"
+# https://openrouter.ai/docs/guides/overview/multimodal/image-generation
+# https://openrouter.ai/docs/guides/overview/multimodal/images
 
 # Маппинг внутренних имён → реальные model-id на OpenRouter
 OPENROUTER_MODEL_MAP: Dict[str, str] = {
@@ -87,7 +90,7 @@ OPENROUTER_MODEL_MAP: Dict[str, str] = {
 SIMPLE_IMAGE_MODELS = {MODEL_SEEDREAM, MODEL_FLUX, MODEL_RIVER}
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_APP_REFERER = "https://t.me/supernanobot"
+OPENROUTER_APP_REFERER = "https://t.me/d4nanobot"
 OPENROUTER_APP_TITLE   = "Nano Image Generator"
 
 MODEL_LABELS = {
@@ -1273,9 +1276,17 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "cmd_prompt":
-        await safe_edit_text(query, "📝 Введите промпт:", parse_mode='Markdown')
         session = get_user_session(telegram_id)
+        current_prompt = session.get("prompt", "")
         session["awaiting"] = "prompt"
+        
+        msg_text = ""
+        if current_prompt:
+            msg_text += f"*Текущий промпт:*\n`{current_prompt[:4000]}{'...' if len(current_prompt) > 4000 else ''}`\n\n"
+            
+        msg_text += "📝 *Введите промпт:*"
+        
+        await safe_edit_text(query, msg_text, parse_mode='Markdown')
         return
 
     elif data == "cmd_refs":
@@ -1489,13 +1500,21 @@ async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("📊 Проверить статус", callback_data="cmd_status")],
         ])
         await update.message.reply_text(
-            f"✅ *Промпт установлен:*\n`{text[:300]}{'...' if len(text) > 300 else ''}`\n\nВыберите следующее действие:",
+            f"✅ *Промпт установлен:*\n`{text[:4000]}{'...' if len(text) > 4000 else ''}`\n\nВыберите следующее действие:",
             parse_mode='Markdown', reply_markup=keyboard
         )
     else:
         session = get_user_session(telegram_id)
+        current_prompt = session.get("prompt", "")
         session["awaiting"] = "prompt"
-        await update.message.reply_text("📝 *Введите текстовый промпт:*\n\n💡 Чем детальнее описание, тем лучше результат.", parse_mode='Markdown')
+        
+        msg_text = ""
+        if current_prompt:
+            msg_text += f"*Текущий промпт:*\n`{current_prompt[:4000]}{'...' if len(current_prompt) > 4000 else ''}`\n\n"
+            
+        msg_text += "📝 *Введите промпт:*"
+        
+        await update.message.reply_text(msg_text, parse_mode='Markdown')
 
 async def select_refs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
