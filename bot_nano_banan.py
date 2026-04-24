@@ -69,7 +69,7 @@ MODEL_FLASH = "gemini-3.1-flash-image-preview"
 MODEL_PRO   = "gemini-3-pro-image-preview"
 
 # OpenAI (Direct)
-MODEL_OPENAI_GPT = "gpt-image-1.5"
+MODEL_OPENAI_GPT = "gpt-image-2"
 # https://developers.openai.com/api/reference/resources/images/methods/generate
 
 # OpenRouter
@@ -96,7 +96,7 @@ OPENROUTER_APP_TITLE   = "Nano Image Generator"
 MODEL_LABELS = {
     MODEL_FLASH:      "⚡ Flash 3.1",
     MODEL_PRO:        "🎨 Pro 3",
-    MODEL_OPENAI_GPT: "🧠 GPT Image 1.5 (OpenAI)",
+    MODEL_OPENAI_GPT: "🧠 GPT Image 2 (OpenAI)",
     MODEL_SEEDREAM:   "🌊 Seedream 4.5",
     MODEL_FLUX:       "🌀 FLUX.2 Max",
     MODEL_RIVER:      "🏞 Riverflow v2 Pro",
@@ -1140,7 +1140,7 @@ def get_model_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Flash 3.1  —  быстрее, думает", callback_data="modelsel_flash")],
         [InlineKeyboardButton("🎨 Pro 3  —  качественнее",         callback_data="modelsel_pro")],
-        [InlineKeyboardButton("🧠 GPT Image 1.5  —  OpenAI",       callback_data="modelsel_openai_gpt")],
+        [InlineKeyboardButton("🧠 GPT Image 2  —  OpenAI",       callback_data="modelsel_openai_gpt")],
         [InlineKeyboardButton("🌊 Seedream 4.5  —  ByteDance",     callback_data="modelsel_seedream")],
         [InlineKeyboardButton("🌀 FLUX.2 Max  —  Black Forest",    callback_data="modelsel_flux")],
         [InlineKeyboardButton("🏞 Riverflow v2 Pro",               callback_data="modelsel_river")],
@@ -1714,19 +1714,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "✅ *Готова к генерации!*"
         keyboard_buttons = [
             [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
-            [InlineKeyboardButton("⚙️ Изменить настройки", callback_data="cmd_settings")],
             [InlineKeyboardButton("📝 Изменить промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")],
+            [InlineKeyboardButton("⚙️ Изменить настройки", callback_data="cmd_settings")],
         ]
     else:
         text += "⚠️ *Задайте промпт перед генерацией*"
         keyboard_buttons = [
             [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
+            [InlineKeyboardButton("🖼 Выбрать референсы", callback_data="cmd_refs")],
             [InlineKeyboardButton("⚙️ Параметры", callback_data="cmd_settings")],
         ]
 
-    keyboard_buttons.insert(1, [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")])
     if refs_count > 0:
         keyboard_buttons.append([InlineKeyboardButton("📥 Скачать референсы", callback_data="cmd_download_refs")])
+        
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
     await message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
@@ -1765,7 +1767,7 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 *Выберите модель для генерации:*\n\n"
         f"⚡ *Flash 3.1* — быстрее, режим «думать» (Google)\n"
         f"🎨 *Pro 3* — выше качество (Google)\n"
-        f"🧠 *GPT Image 1.5* — OpenAI (Direct API)\n"
+        f"🧠 *GPT Image 2* — OpenAI (Direct API)\n"
         f"🌊 *Seedream 4.5* — ByteDance (OpenRouter)\n"
         f"🌀 *FLUX.2 Max* — Black Forest (OpenRouter)\n"
         f"🏞 *Riverflow v2 Pro* — Sourceful (OpenRouter)\n\n"
