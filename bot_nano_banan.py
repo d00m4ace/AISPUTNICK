@@ -435,13 +435,79 @@ class GeminiImageGenerator:
 # OpenAI Direct Image Generator (Raw HTTP with Dynamic Base URL)
 # =============================================================================
 class OpenAIImageGenerator:
+
+    # Базовые размеры (1K) для каждого соотношения сторон.
+    # Все значения кратны 16 — требование GPT Image 2 API.
+    BASE_SIZES = {
+        "1:1":   (1024, 1024),
+        "3:2":   (1536, 1024),
+        "2:3":   (1024, 1536),
+        "4:3":   (1024, 768),
+        "3:4":   (768,  1024),
+        "5:4":   (1280, 1024),   # ← было: падал в else → квадрат (баг)
+        "4:5":   (1024, 1280),
+        "16:9":  (1536, 864),
+        "9:16":  (864,  1536),
+        "21:9":  (2016, 864),
+    }
+
+    # Человекочитаемые подсказки для промпта
+    RATIO_HINTS = {
+        "1:1":  "square (1:1)",
+        "3:2":  "landscape (3:2)",
+        "2:3":  "portrait (2:3)",
+        "4:3":  "landscape (4:3)",
+        "3:4":  "portrait (3:4)",
+        "5:4":  "landscape (5:4)",
+        "4:5":  "portrait (4:5)",
+        "16:9": "landscape widescreen (16:9)",
+        "9:16": "portrait (9:16)",
+        "21:9": "ultra-wide landscape (21:9)",
+    }
+
+    # Множители для image_size. 2K — стабильный, 4K — экспериментальный.
+    SIZE_MULTIPLIERS = {
+        "1K": 1.0,
+        "2K": 1.5,   # ~1536–2304px — стабильная зона
+        "4K": 2.25,  # ~2304–4032px — экспериментально для GPT Image 2
+    }
+
+    # quality для каждого уровня image_size
+    SIZE_QUALITY = {
+        "1K": "medium",
+        "2K": "high",
+        "4K": "high",
+    }
+
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        # Инициализируем клиент ТОЛЬКО для того, чтобы подхватить ваш кастомный Base URL из окружения
+        # Инициализируем клиент только для того, чтобы подхватить
+        # кастомный Base URL из переменной окружения OPENAI_BASE_URL
         self.client = OpenAI(api_key=self.api_key)
-        # Извлекаем базовый URL провайдера (убираем слэш на конце для удобства)
         self.base_url = str(self.client.base_url).rstrip('/')
+
+    @staticmethod
+    def _round16(value: int) -> int:
+        """Округляет до кратного 16 (обязательное требование GPT Image 2 API)."""
+        return max(16, (value // 16) * 16)
+
+    def _resolve_size(self, aspect_ratio: str, image_size: str) -> str:
+        """
+        Возвращает строку 'WxH' с учётом aspect_ratio и image_size (1K/2K/4K).
+        Все стороны кратны 16, не выходят за лимиты API (max 8192px).
+        """
+        w, h = self.BASE_SIZES.get(aspect_ratio, (1024, 1024))
+        multiplier = self.SIZE_MULTIPLIERS.get(image_size, 1.0)
+
+        w = self._round16(int(w * multiplier))
+        h = self._round16(int(h * multiplier))
+
+        # Жёсткий лимит API: каждая сторона ≤ 8192px
+        w = min(w, 8192)
+        h = min(h, 8192)
+
+        return f"{w}x{h}"
 
     def _sync_generate(
         self,
@@ -457,103 +523,111 @@ class OpenAIImageGenerator:
     ) -> Tuple[Optional[bytes], Optional[str], int]:
 
         MAX_RETRIES = 5
-        BASE_DELAY = 120
+        BASE_DELAY  = 120
 
-        # Разрешения под вашу документацию
-        if aspect_ratio in ["16:9", "3:2", "4:3", "21:9"]:
-            size = "1536x1024"
-            ratio_prompt = "landscape (16:9)"
-        elif aspect_ratio in ["9:16", "2:3", "3:4", "4:5"]:
-            size = "1024x1536"
-            ratio_prompt = "portrait (9:16)"
-        else:
-            size = "1024x1024"
-            ratio_prompt = "square (1:1)"
+        # --- Вычисляем финальный размер и quality ---
+        size        = self._resolve_size(aspect_ratio, image_size)
+        quality     = self.SIZE_QUALITY.get(image_size, "medium")
+        ratio_hint  = self.RATIO_HINTS.get(aspect_ratio, "square (1:1)")
 
-        final_prompt = prompt + f"\n\n[CRITICAL: You MUST generate this image in {ratio_prompt} format.]"
+        final_prompt = prompt + f"\n\n[CRITICAL: You MUST generate this image in {ratio_hint} format.]"
         if len(final_prompt) > 4000:
-            final_prompt = final_prompt[:3900] + f" [Format: {ratio_prompt}]"
+            final_prompt = final_prompt[:3900] + f" [Format: {ratio_hint}]"
 
         for attempt in range(MAX_RETRIES):
             try:
                 log_console("OPENAI_REQUEST_ATTEMPT", f"Attempt {attempt + 1}/{MAX_RETRIES}", {
-                    "model": model,
-                    "size": size,
-                    "has_refs": bool(reference_images),
-                    "num_refs": len(reference_images),
-                    "target_url": self.base_url
+                    "model":      model,
+                    "size":       size,
+                    "quality":    quality,
+                    "image_size": image_size,
+                    "has_refs":   bool(reference_images),
+                    "num_refs":   len(reference_images),
+                    "target_url": self.base_url,
                 })
 
                 if reference_images:
-                    # --- Использование референсов: точная копия вашего CURL ---
-                    url = f"{self.base_url}/images/edits"
+                    # --- Редактирование / генерация с референсами ---
+                    url     = f"{self.base_url}/images/edits"
                     headers = {"Authorization": f"Bearer {self.api_key}"}
-                    
-                    # Собираем файлы с ключом "image[]" (в точности как в -F "image[]=@...")
+
                     files = []
                     for idx, img_bytes in enumerate(reference_images):
                         files.append(("image[]", (f"ref_{idx}.png", img_bytes, "image/png")))
-                        
+
                     data = {
-                        "model": model,
-                        "prompt": final_prompt,
-                        "n": 1,
-                        "size": size
+                        "model":   model,
+                        "prompt":  final_prompt,
+                        "n":       1,
+                        "size":    size,
+                        "quality": quality,
                     }
-                    
-                    resp = requests.post(url, headers=headers, data=data, files=files, timeout=GEMINI_GENERATION_TIMEOUT)
-                    
+
+                    resp = requests.post(
+                        url, headers=headers,
+                        data=data, files=files,
+                        timeout=GEMINI_GENERATION_TIMEOUT,
+                    )
+
                 else:
                     # --- Обычная генерация (Text-to-Image) ---
-                    url = f"{self.base_url}/images/generations"
+                    url     = f"{self.base_url}/images/generations"
                     headers = {
                         "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type":  "application/json",
                     }
-                    
+
                     payload = {
-                        "model": model,
-                        "prompt": final_prompt,
-                        "n": 1,
-                        "size": size
+                        "model":           model,
+                        "prompt":          final_prompt,
+                        "n":               1,
+                        "size":            size,
+                        "quality":         quality,
+                        "response_format": "b64_json",   # явно запрашиваем base64
                     }
-                    
-                    resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_GENERATION_TIMEOUT)
+
+                    resp = requests.post(
+                        url, headers=headers,
+                        json=payload,
+                        timeout=GEMINI_GENERATION_TIMEOUT,
+                    )
 
                 # Проверка статуса ответа
                 if resp.status_code not in [200, 201]:
                     raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
-                    
+
                 body = resp.json()
                 item = body.get("data", [{}])[0]
-                
-                # Ищем Base64 (как в вашем jq скрипте)
+
+                # Приоритет: Base64 → URL
                 b64_data = item.get("b64_json")
                 if b64_data:
                     return base64.b64decode(b64_data), None, seed
-                    
-                # Подстраховка: если провайдер вернул URL вместо Base64
+
                 img_url = item.get("url")
                 if img_url:
-                    log_console("OPENAI_DOWNLOADING", f"Fetching image from URL...")
+                    log_console("OPENAI_DOWNLOADING", "Fetching image from URL...")
                     img_resp = requests.get(img_url, timeout=GEMINI_GENERATION_TIMEOUT)
                     if img_resp.status_code == 200:
                         return img_resp.content, None, seed
-                    else:
-                        return None, f"DOWNLOAD_ERROR: HTTP {img_resp.status_code}", seed
+                    return None, f"DOWNLOAD_ERROR: HTTP {img_resp.status_code}", seed
 
                 return None, f"NO_IMAGE_DATA_IN_RESPONSE: {str(body)[:300]}", seed
 
             except Exception as e:
-                error_str = str(e)
+                error_str  = str(e)
                 is_overload = any(x in error_str for x in ["503", "429", "502", "500", "Rate limit"])
-                
+
                 if is_overload and attempt < MAX_RETRIES - 1:
                     wait = min(BASE_DELAY * (2 ** min(attempt, 1)), 130)
-                    log_console("OPENAI_RETRY", f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s", {"error": error_str[:200]})
+                    log_console("OPENAI_RETRY",
+                                f"Attempt {attempt + 1}/{MAX_RETRIES}, waiting {wait}s",
+                                {"error": error_str[:200]})
                     if loop and retry_callback:
                         try:
-                            asyncio.run_coroutine_threadsafe(retry_callback(attempt + 1, MAX_RETRIES, wait), loop)
+                            asyncio.run_coroutine_threadsafe(
+                                retry_callback(attempt + 1, MAX_RETRIES, wait), loop
+                            )
                         except Exception:
                             pass
                     time.sleep(wait)
@@ -568,21 +642,24 @@ class OpenAIImageGenerator:
         prompt: str,
         reference_images: List[bytes],
         temperature: float = 1.0,
-        aspect_ratio: str = "16:9",
-        image_size: str = "1K",
-        seed: int = -1,
-        model: str = MODEL_OPENAI_GPT,
+        aspect_ratio: str  = "16:9",
+        image_size: str    = "1K",
+        seed: int          = -1,
+        model: str         = MODEL_OPENAI_GPT,
         retry_callback: Optional[Callable] = None,
     ) -> Tuple[Optional[bytes], Optional[str], int]:
-        
+
         if seed <= 0:
             seed = random.randint(SEED_MIN, SEED_MAX)
 
+        resolved_size = self._resolve_size(aspect_ratio, image_size)
         log_console("OPENAI_REQUEST", "Starting Custom HTTP generation", {
-            "model": model,
-            "image_size": image_size,
-            "aspect_ratio": aspect_ratio,
-            "num_refs": len(reference_images)
+            "model":          model,
+            "image_size":     image_size,
+            "aspect_ratio":   aspect_ratio,
+            "resolved_size":  resolved_size,
+            "quality":        self.SIZE_QUALITY.get(image_size, "medium"),
+            "num_refs":       len(reference_images),
         })
 
         loop = asyncio.get_event_loop()
@@ -605,13 +682,17 @@ class OpenAIImageGenerator:
                 ),
                 timeout=GEMINI_GENERATION_TIMEOUT,
             )
-            
+
             image_data, error, used_seed = result
             if image_data:
-                log_console("OPENAI_SUCCESS", "Image generated", {"size_kb": len(image_data) // 1024})
+                log_console("OPENAI_SUCCESS", "Image generated", {
+                    "size_kb":       len(image_data) // 1024,
+                    "resolved_size": resolved_size,
+                    "image_size":    image_size,
+                })
             else:
                 log_console("OPENAI_FAILED", "Generation failed", {"error": error})
-                
+
             return result
 
         except asyncio.TimeoutError:
