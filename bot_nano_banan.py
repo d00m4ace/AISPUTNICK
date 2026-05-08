@@ -583,7 +583,6 @@ class OpenAIImageGenerator:
                         "n":               1,
                         "size":            size,
                         "quality":         quality,
-                        "response_format": "b64_json",   # явно запрашиваем base64
                     }
 
                     resp = requests.post(
