@@ -2358,6 +2358,7 @@ async def quick_ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Сгенерировать", callback_data="cmd_generate")],
+        [InlineKeyboardButton("📝 Задать промпт", callback_data="cmd_prompt")],
         [InlineKeyboardButton("🖼 Изменить референсы", callback_data="cmd_refs")],
         [InlineKeyboardButton("📊 Статус", callback_data="cmd_status")],
     ])
