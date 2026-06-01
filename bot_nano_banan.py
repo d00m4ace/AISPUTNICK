@@ -37,6 +37,9 @@ from google.genai import types
 
 from openai import OpenAI
 
+from pillow_heif import register_heif_opener
+register_heif_opener()  # один раз при старте — PIL начнёт понимать HEIC
+
 # ========== Настройки ==========
 TELEGRAM_TOKEN = "7...0"  
 
@@ -1108,9 +1111,9 @@ def format_settings_text(settings: Dict, used_seed: Optional[int] = None) -> str
     )
 
 def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes:
-    if len(photo_bytes) <= max_bytes:
-        return photo_bytes
+    # ← ИЗМЕНИТЬ: всегда прогоняем через PIL → всегда получаем JPEG
     img = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
+    
     quality = 85
     scale = 1.0
     while True:
@@ -1124,11 +1127,6 @@ def resize_for_telegram(photo_bytes: bytes, max_bytes: int = 9_900_000) -> bytes
         resized.save(buf, "JPEG", quality=quality)
         data = buf.getvalue()
         if len(data) <= max_bytes:
-            log_console("RESIZE_IMAGE", f"Resized to {len(data)//1024} KB", {
-                "original_kb": len(photo_bytes)//1024,
-                "scale": scale,
-                "quality": quality,
-            })
             return data
         if quality > 60:
             quality -= 10
@@ -2201,6 +2199,18 @@ async def process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         photo_bytes = await file.download_as_bytearray()
+        
+        # ← ДОБАВИТЬ: конвертируем в PNG через PIL (автоматически обработает HEIC)
+        try:
+            img = Image.open(io.BytesIO(bytes(photo_bytes))).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            photo_bytes = buf.getvalue()
+        except Exception as e:
+            log_console("PHOTO_CONVERT_ERROR", str(e))
+            await update.message.reply_text("❌ Не удалось прочитать изображение. Попробуйте другой формат.")
+            return        
+        
         saved_path = image_storage.save_image(telegram_id, bytes(photo_bytes), prefix="uploaded")
 
         keyboard = InlineKeyboardMarkup([

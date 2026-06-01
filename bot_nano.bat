@@ -7,4 +7,6 @@ pip install markitdown[all]
 
 pip install --upgrade google-genai
 
+pip install pillow-heif
+
 python bot_nano_banan.py
