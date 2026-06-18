@@ -362,6 +362,26 @@ class DocumentSync:
             # Check for updates if needed
             force_update = getattr(self, 'force_update', False)
 
+            # Принудительное полное обновление, если последняя синхронизация
+            # этой страницы была больше недели назад
+            if not force_update and page_data:
+                last_sync_str = page_data.get('last_sync')
+                if last_sync_str:
+                    try:
+                        last_sync_dt = self._normalize_datetime(last_sync_str)
+                        if last_sync_dt:
+                            from datetime import timezone
+                            now_utc = datetime.now(timezone.utc)
+                            days_since_sync = (now_utc - last_sync_dt).total_seconds() / 86400
+                            if days_since_sync >= 7:
+                                logger.info(
+                                    f"Page {page_id}: last sync was {days_since_sync:.1f} days ago "
+                                    f"(>= 7), forcing full update"
+                                )
+                                force_update = True
+                    except Exception as e:
+                        logger.warning(f"Error parsing last_sync date for {page_id}: {e}")
+
             if not force_update and page_config.get('check_updates', True) and page_data:
                 last_modified_str = page_data.get('last_modified')
                 if last_modified_str:
@@ -553,6 +573,28 @@ class DocumentSync:
         
             # Загружаем текущие локальные данные
             local_data = self.load_local_data()
+
+            # Принудительное полное обновление всей папки, если последняя
+            # синхронизация папки была больше недели назад
+            force_update = getattr(self, 'force_update', False)
+            if not force_update and folder_page_id:
+                folder_entry = local_data.get('pages', {}).get(folder_page_id, {})
+                last_sync_str = folder_entry.get('last_sync')
+                if last_sync_str:
+                    try:
+                        last_sync_dt = self._normalize_datetime(last_sync_str)
+                        if last_sync_dt:
+                            from datetime import timezone
+                            now_utc = datetime.now(timezone.utc)
+                            days_since_sync = (now_utc - last_sync_dt).total_seconds() / 86400
+                            if days_since_sync >= 7:
+                                logger.info(
+                                    f"Folder {folder_page_id}: last sync was {days_since_sync:.1f} days ago "
+                                    f"(>= 7), forcing full re-sync of the whole folder"
+                                )
+                                force_update = True
+                    except Exception as e:
+                        logger.warning(f"Error parsing last_sync date for folder {folder_page_id}: {e}")
         
             # Создаем индекс существующих файлов по Yandex Disk path
             existing_files_index = {}
@@ -601,8 +643,16 @@ class DocumentSync:
                         existing_data = existing_entry['page_data']
                         stats['unchanged'] += 1
                     
+                        if force_update:
+                            # Вся папка устарела (>= 7 дней) либо запрошено
+                            # принудительное обновление — обновляем файл
+                            # независимо от времени модификации
+                            needs_processing = True
+                            stats['updated'] += 1
+                            stats['unchanged'] -= 1
+                            logger.debug(f"Force updating file {file_name} (folder force update)")
                         # Проверяем нужно ли обновление
-                        if page_config.get('check_updates', True) and modified_time:
+                        elif page_config.get('check_updates', True) and modified_time:
                             last_sync = existing_data.get('ydisk_modified_time')
                         
                             if last_sync and modified_time:
@@ -984,6 +1034,28 @@ class DocumentSync:
     
             # Загружаем текущие локальные данные
             local_data = self.load_local_data()
+
+            # Принудительное полное обновление всей папки, если последняя
+            # синхронизация папки была больше недели назад
+            force_update = getattr(self, 'force_update', False)
+            if not force_update and folder_page_id:
+                folder_entry = local_data.get('pages', {}).get(folder_page_id, {})
+                last_sync_str = folder_entry.get('last_sync')
+                if last_sync_str:
+                    try:
+                        last_sync_dt = self._normalize_datetime(last_sync_str)
+                        if last_sync_dt:
+                            from datetime import timezone
+                            now_utc = datetime.now(timezone.utc)
+                            days_since_sync = (now_utc - last_sync_dt).total_seconds() / 86400
+                            if days_since_sync >= 7:
+                                logger.info(
+                                    f"Folder {folder_page_id}: last sync was {days_since_sync:.1f} days ago "
+                                    f"(>= 7), forcing full re-sync of the whole folder"
+                                )
+                                force_update = True
+                    except Exception as e:
+                        logger.warning(f"Error parsing last_sync date for folder {folder_page_id}: {e}")
     
             # Создаем индекс существующих файлов по Google Drive ID
             existing_files_index = {}
@@ -1059,7 +1131,14 @@ class DocumentSync:
                                 logger.warning(f"Could not check existing file for 429 error: {e}")
                 
                         # Определяем нужно ли обновление
-                        if has_429_error or format_changed:
+                        if force_update:
+                            # Вся папка устарела (>= 7 дней) либо запрошено
+                            # принудительное обновление — обновляем файл
+                            # независимо от времени модификации
+                            needs_processing = True
+                            stats['updated'] += 1
+                            logger.debug(f"Force updating file {file_name} (folder force update)")
+                        elif has_429_error or format_changed:
                             needs_processing = True
                             if format_changed:
                                 stats['updated'] += 1
