@@ -67,9 +67,21 @@ SEED_MIN = 1
 SEED_MAX = 2147483647
 
 # ========== Модели ==========
-# Google
-MODEL_FLASH = "gemini-3.1-flash-image-preview"
-MODEL_PRO   = "gemini-3-pro-image-preview"
+# Google (актуальные ID моделей, без "-preview" — модели вышли в общий релиз)
+MODEL_FLASH_LITE = "gemini-3.1-flash-lite-image"   # самая быстрая/дешёвая
+MODEL_FLASH      = "gemini-3.1-flash-image"
+MODEL_PRO        = "gemini-3-pro-image"
+
+# Google Imagen 4 — отдельный API (client.models.generate_images),
+# только text-to-image, референсы (reference_images) НЕ поддерживаются
+MODEL_IMAGEN4        = "imagen-4.0-generate-001"
+MODEL_IMAGEN4_ULTRA  = "imagen-4.0-ultra-generate-001"
+MODEL_IMAGEN4_FAST   = "imagen-4.0-fast-generate-001"
+
+# Наборы для маршрутизации
+GOOGLE_GEMINI_MODELS = {MODEL_FLASH_LITE, MODEL_FLASH, MODEL_PRO}
+GOOGLE_IMAGEN_MODELS = {MODEL_IMAGEN4, MODEL_IMAGEN4_ULTRA, MODEL_IMAGEN4_FAST}
+GOOGLE_MODELS        = GOOGLE_GEMINI_MODELS | GOOGLE_IMAGEN_MODELS
 
 # OpenAI (Direct)
 MODEL_OPENAI_GPT = "gpt-image-2"
@@ -97,12 +109,16 @@ OPENROUTER_APP_REFERER = "https://t.me/d4nanobot"
 OPENROUTER_APP_TITLE   = "Nano Image Generator"
 
 MODEL_LABELS = {
-    MODEL_FLASH:      "⚡ Flash 3.1",
-    MODEL_PRO:        "🎨 Pro 3",
-    MODEL_OPENAI_GPT: "🧠 GPT Image 2 (OpenAI)",
-    MODEL_SEEDREAM:   "🌊 Seedream 4.5",
-    MODEL_FLUX:       "🌀 FLUX.2 Max",
-    MODEL_RIVER:      "🏞 Riverflow v2 Pro",
+    MODEL_FLASH_LITE:    "🪶 Flash Lite 3.1",
+    MODEL_FLASH:         "⚡ Flash 3.1",
+    MODEL_PRO:           "🎨 Pro 3",
+    MODEL_IMAGEN4:       "🖼 Imagen 4",
+    MODEL_IMAGEN4_ULTRA: "💎 Imagen 4 Ultra",
+    MODEL_IMAGEN4_FAST:  "🚀 Imagen 4 Fast",
+    MODEL_OPENAI_GPT:    "🧠 GPT Image 2 (OpenAI)",
+    MODEL_SEEDREAM:      "🌊 Seedream 4.5",
+    MODEL_FLUX:          "🌀 FLUX.2 Max",
+    MODEL_RIVER:         "🏞 Riverflow v2 Pro",
 }
 # ===============================================
 
@@ -287,6 +303,33 @@ class GeminiImageGenerator:
             try:
                 client = genai.Client(api_key=self.api_key)
 
+                # ---- Imagen 4 (generate/ultra/fast): отдельный API, только text-to-image ----
+                if model in GOOGLE_IMAGEN_MODELS:
+                    if reference_images:
+                        log_console(
+                            "IMAGEN_NO_REFS",
+                            "Imagen 4 не поддерживает референсы — они будут проигнорированы",
+                            {"model": model, "num_refs": len(reference_images)}
+                        )
+
+                    result = client.models.generate_images(
+                        model=model,
+                        prompt=prompt,
+                        config=dict(
+                            number_of_images=1,
+                            person_generation="ALLOW_ADULT",
+                            aspect_ratio=aspect_ratio,
+                            image_size=image_size,
+                        ),
+                    )
+
+                    if not result.generated_images:
+                        return None, "NO_IMAGE_DATA", seed
+
+                    img_bytes = result.generated_images[0].image.image_bytes
+                    return img_bytes, None, seed
+
+                # ---- Gemini (Flash Lite / Flash / Pro): чат-модель с картинкой ----
                 parts = []
                 for img_data in reference_images:
                     parts.append(types.Part.from_bytes(mime_type="image/png", data=img_data))
@@ -304,7 +347,7 @@ class GeminiImageGenerator:
                     seed=seed,
                 )
 
-                if model == MODEL_FLASH:
+                if model in (MODEL_FLASH, MODEL_FLASH_LITE):
                     config_kwargs["thinking_config"] = types.ThinkingConfig(
                         thinking_level="MINIMAL"
                     )
@@ -1216,8 +1259,12 @@ async def safe_send_media_group(bot, chat_id: int, media_group: List, retries: i
 
 def get_model_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪶 Flash Lite 3.1  —  максимально быстро", callback_data="modelsel_flash_lite")],
         [InlineKeyboardButton("⚡ Flash 3.1  —  быстрее, думает", callback_data="modelsel_flash")],
         [InlineKeyboardButton("🎨 Pro 3  —  качественнее",         callback_data="modelsel_pro")],
+        [InlineKeyboardButton("🖼 Imagen 4  —  без референсов",    callback_data="modelsel_imagen4")],
+        [InlineKeyboardButton("💎 Imagen 4 Ultra  —  без референсов", callback_data="modelsel_imagen4_ultra")],
+        [InlineKeyboardButton("🚀 Imagen 4 Fast  —  без референсов",  callback_data="modelsel_imagen4_fast")],
         [InlineKeyboardButton("🧠 GPT Image 2  —  OpenAI",       callback_data="modelsel_openai_gpt")],
         [InlineKeyboardButton("🌊 Seedream 4.5  —  ByteDance",     callback_data="modelsel_seedream")],
         [InlineKeyboardButton("🌀 FLUX.2 Max  —  Black Forest",    callback_data="modelsel_flux")],
@@ -1520,12 +1567,16 @@ async def model_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     _model_map = {
-        "modelsel_flash":       MODEL_FLASH,
-        "modelsel_pro":         MODEL_PRO,
-        "modelsel_openai_gpt":  MODEL_OPENAI_GPT,
-        "modelsel_seedream":    MODEL_SEEDREAM,
-        "modelsel_flux":        MODEL_FLUX,
-        "modelsel_river":       MODEL_RIVER,
+        "modelsel_flash_lite":    MODEL_FLASH_LITE,
+        "modelsel_flash":         MODEL_FLASH,
+        "modelsel_pro":           MODEL_PRO,
+        "modelsel_imagen4":       MODEL_IMAGEN4,
+        "modelsel_imagen4_ultra": MODEL_IMAGEN4_ULTRA,
+        "modelsel_imagen4_fast":  MODEL_IMAGEN4_FAST,
+        "modelsel_openai_gpt":    MODEL_OPENAI_GPT,
+        "modelsel_seedream":      MODEL_SEEDREAM,
+        "modelsel_flux":          MODEL_FLUX,
+        "modelsel_river":         MODEL_RIVER,
     }
     model = _model_map.get(data, MODEL_PRO)
     model_label = MODEL_LABELS[model]
@@ -1843,8 +1894,10 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await message.reply_text(
         f"🤖 *Выберите модель для генерации:*\n\n"
+        f"🪶 *Flash Lite 3.1* — самая быстрая (Google)\n"
         f"⚡ *Flash 3.1* — быстрее, режим «думать» (Google)\n"
         f"🎨 *Pro 3* — выше качество (Google)\n"
+        f"🖼 *Imagen 4 / Ultra / Fast* — Google, без референсов\n"
         f"🧠 *GPT Image 2* — OpenAI (Direct API)\n"
         f"🌊 *Seedream 4.5* — ByteDance (OpenRouter)\n"
         f"🌀 *FLUX.2 Max* — Black Forest (OpenRouter)\n"
@@ -1870,7 +1923,7 @@ async def _run_generation(
     model_label = MODEL_LABELS.get(model, model)
 
     # Маршрутизация на основе модели
-    if model in [MODEL_FLASH, MODEL_PRO]:
+    if model in GOOGLE_MODELS:
         active_generator = gemini_generator
         provider_log = "google"
     elif model == MODEL_OPENAI_GPT:
@@ -2415,7 +2468,10 @@ def main():
 
     # Выбор модели
     application.add_handler(
-        CallbackQueryHandler(model_select_callback, pattern=r"^modelsel_(flash|pro|openai_gpt|seedream|flux|river)$")
+        CallbackQueryHandler(
+            model_select_callback,
+            pattern=r"^modelsel_(flash_lite|flash|pro|imagen4_ultra|imagen4_fast|imagen4|openai_gpt|seedream|flux|river)$"
+        )
     )
 
     # Callbacks настроек и навигации
@@ -2445,7 +2501,8 @@ def main():
     print(f"👥 Пользователей: {len(user_manager.users)}")
     print(f"💎 Premium: {len(PREMIUM_USERS)}")
     print(f"⏱ Таймаут: {GEMINI_GENERATION_TIMEOUT}s")
-    print(f"🤖 Модели Google: {MODEL_FLASH} | {MODEL_PRO}")
+    print(f"🤖 Модели Google (Gemini): {MODEL_FLASH_LITE} | {MODEL_FLASH} | {MODEL_PRO}")
+    print(f"🤖 Модели Google (Imagen 4): {MODEL_IMAGEN4} | {MODEL_IMAGEN4_ULTRA} | {MODEL_IMAGEN4_FAST}")
     print(f"🤖 Модели OpenAI: {MODEL_OPENAI_GPT}")
     print(f"🌐 Провайдер OR: OpenRouter ({OPENROUTER_BASE_URL})")
     print(f"🤖 Seedream → {OPENROUTER_MODEL_MAP[MODEL_SEEDREAM]}")
